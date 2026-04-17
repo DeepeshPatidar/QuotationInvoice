@@ -1,0 +1,116 @@
+================================================================================
+  APEX QUOTATION MANAGER - QUICK BUILD GUIDE
+================================================================================
+
+OPTION 1: EASIEST METHOD - Just Click build.bat
+================================================================================
+1. Go to the PythonApp folder
+2. Double-click: build.bat
+3. Wait for the script to finish (2-5 minutes)
+4. Find QuotationManager.exe in the dist\ folder
+5. Run it: dist\QuotationManager.exe
+
+Result: A single .EXE file you can share with anyone!
+
+
+OPTION 2: POWERSHELL METHOD
+================================================================================
+1. Open PowerShell in the PythonApp folder
+2. Run: .\build.ps1
+3. Wait for build to complete
+4. Run: .\dist\QuotationManager.exe
+
+
+OPTION 3: MANUAL PYTHON METHOD
+================================================================================
+1. Open PowerShell or Command Prompt
+2. Run: python -m pip install pyinstaller
+3. Run: python build_exe.py
+4. Run: .\dist\QuotationManager.exe
+
+
+WHAT YOU'LL GET
+================================================================================
+
+? QuotationManager.exe (200-300 MB standalone executable)
+  - Works on any Windows computer
+  - No Python needed on user's computer
+  - No installation needed
+  - Database files stored in C:\Users\[User]\AppData\Roaming\ApexAutomobile\
+
+To create a professional installer with Start Menu shortcuts, see:
+  PACKAGING_GUIDE.md
+
+
+TROUBLESHOOTING
+================================================================================
+
+Q: build.bat doesn't work?
+A: Right-click build.bat ? Run as Administrator
+
+Q: PowerShell script won't run?
+A: Run: powershell -ExecutionPolicy Bypass -File build.ps1
+
+Q: "Python not found"?
+A: Install Python from https://www.python.org/
+   Make sure to check "Add Python to PATH" during installation
+
+Q: PyInstaller errors?
+A: Make sure dependencies are installed:
+   pip install -r requirements.txt
+
+Q: .EXE is huge (300+ MB)?
+A: This is normal! PyInstaller includes Python and all libraries.
+   You can use UPX to compress it if needed.
+
+
+DISTRIBUTION
+================================================================================
+
+After building, you can:
+
+1. Run it directly on your computer: dist\QuotationManager.exe
+
+2. Share the .EXE file with users via:
+   - Email
+   - Cloud storage (Google Drive, OneDrive, etc.)
+   - USB drive
+   - Your company's internal network
+
+3. Create a professional installer (optional):
+   - Install NSIS: https://nsis.sourceforge.io/
+   - Run NSIS and build installer.nsi
+   - Share: ApexQuotationManager-Installer.exe
+
+
+FILES CREATED BY THE BUILD
+================================================================================
+
+dist\
+  ÀÄÄ QuotationManager.exe          ? The standalone executable
+
+build\                              ? Temporary build files (can delete)
+
+QuotationManager.spec              ? PyInstaller spec file
+
+
+TESTING YOUR .EXE
+================================================================================
+
+1. Double-click QuotationManager.exe to run it
+2. Test creating/editing quotations
+3. Generate PDF files
+4. Verify database saves
+5. Tests setting changes
+
+If everything works, it's ready to distribute!
+
+
+QUESTIONS?
+================================================================================
+
+See PACKAGING_GUIDE.md for detailed instructions and troubleshooting.
+
+Or contact your system administrator.
+
+================================================================================

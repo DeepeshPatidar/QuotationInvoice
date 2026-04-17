@@ -4,14 +4,36 @@ from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QTabWidget,
     QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QTextEdit,
     QPushButton, QMessageBox, QTableWidget, QTableWidgetItem, QHeaderView,
-    QFileDialog, QSpinBox, QDoubleSpinBox
+    QFileDialog, QSpinBox, QDoubleSpinBox, QDialog, QDialogButtonBox,
+    QListWidget, QListWidgetItem
 )
 from PyQt6.QtWidgets import QDateEdit
 from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import QTableWidget, QTableWidgetItem, QAbstractItemView
 from PyQt6.QtWidgets import QComboBox, QTextEdit
-from quotation_tool import Database, QuotePDF, QuotationService, InvoiceService, default_terms
+from quotation_tool import Database, QuotePDF, QuotationService, InvoiceService, default_terms, default_proforma_terms, default_invoice_terms, save_company_info, load_company_info
 from decimal import Decimal
+
+# ---------- Utility Functions ----------
+def create_status_item(status):
+    """Create a QTableWidgetItem with status-specific styling"""
+    from PyQt6.QtGui import QBrush, QColor
+    item = QTableWidgetItem(status)
+    status_colors = {
+        'Draft': QColor(200, 200, 200),      # Gray
+        'Pending': QColor(255, 200, 0),      # Orange/Yellow
+        'Accepted': QColor(144, 238, 144),   # Light Green
+        'Rejected': QColor(255, 127, 127),   # Light Red
+        'Unpaid': QColor(255, 200, 100),     # Light Orange
+        'Partially Paid': QColor(255, 220, 130),  # Lighter Orange
+        'Paid': QColor(144, 238, 144),       # Light Green
+        'Issued': QColor(173, 216, 230),     # Light Blue
+    }
+    color = status_colors.get(status, QColor(255, 255, 255))
+    item.setBackground(QBrush(color))
+    item.setForeground(QBrush(QColor(0, 0, 0)))
+    return item
+
 # ---------- Customers Tab ----------
 class CustomersTab(QWidget):
     def __init__(self, db: Database):
@@ -24,6 +46,7 @@ class CustomersTab(QWidget):
         self.contact = QLineEdit()
         self.phone = QLineEdit()
         self.email = QLineEdit()
+        self.gstin = QLineEdit()
         self.address = QTextEdit()
         self.layout.addWidget(QLabel("Customer Name:"))
         self.layout.addWidget(self.name)
@@ -33,22 +56,47 @@ class CustomersTab(QWidget):
         self.layout.addWidget(self.phone)
         self.layout.addWidget(QLabel("Email:"))
         self.layout.addWidget(self.email)
+        self.layout.addWidget(QLabel("GSTIN:"))
+        self.layout.addWidget(self.gstin)
         self.layout.addWidget(QLabel("Address:"))
         self.layout.addWidget(self.address)
         # Add button
         self.add_btn = QPushButton("Add Customer")
         self.add_btn.clicked.connect(self.add_customer)
         self.layout.addWidget(self.add_btn)
+
+        self.edit_btn = QPushButton("Edit Selected Customer")
+        self.edit_btn.setEnabled(False)
+        self.edit_btn.clicked.connect(self.edit_customer)
+        self.layout.addWidget(self.edit_btn)
+
+        self.save_btn = QPushButton("Save Changes")
+        self.save_btn.setEnabled(False)
+        self.save_btn.clicked.connect(self.save_customer_changes)
+        self.layout.addWidget(self.save_btn)
+        
+        # Search bar
+        search_layout = QHBoxLayout()
+        self.search = QLineEdit()
+        self.search.setPlaceholderText("Search by name, phone, email, or GSTIN...")
+        self.search.textChanged.connect(self.refresh_table)
+        search_layout.addWidget(QLabel("Search:"))
+        search_layout.addWidget(self.search)
+        self.layout.addLayout(search_layout)
+        
         # Table
-        self.customer_table = QTableWidget(0, 6)
-        self.customer_table.setHorizontalHeaderLabels(["ID","Name","Contact","Phone","Email","Address"])
+        self.customer_table = QTableWidget(0, 7)
+        self.customer_table.setHorizontalHeaderLabels(["ID","Name","Contact","Phone","Email","GSTIN","Address"])
         self.customer_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.customer_table.itemSelectionChanged.connect(self.on_customer_selected)
         self.layout.addWidget(QLabel("Customer List:"))
         self.layout.addWidget(self.customer_table)
         # Delete button
         self.del_btn = QPushButton("Delete Selected Customer")
+        self.del_btn.setEnabled(False)
         self.del_btn.clicked.connect(self.delete_customer)
         self.layout.addWidget(self.del_btn)
+        self.editing_customer_id = None
         self.refresh_table()
     def add_customer(self):
         if not self.name.text():
@@ -59,23 +107,81 @@ class CustomersTab(QWidget):
             self.contact.text(),
             self.phone.text(),
             self.email.text(),
-            self.address.toPlainText()
+            self.address.toPlainText(),
+            self.gstin.text()
         )
         QMessageBox.information(self, "Success", "Customer added!")
+        self.clear_form()
+        self.refresh_table()
+
+    def clear_form(self):
         self.name.clear()
         self.contact.clear()
         self.phone.clear()
         self.email.clear()
+        self.gstin.clear()
         self.address.clear()
+        self.editing_customer_id = None
+        self.add_btn.setEnabled(True)
+        self.save_btn.setEnabled(False)
+        self.edit_btn.setEnabled(False)
+
+    def on_customer_selected(self):
+        row = self.customer_table.currentRow()
+        has_selection = row >= 0
+        self.edit_btn.setEnabled(has_selection)
+        self.del_btn.setEnabled(has_selection)
+
+    def edit_customer(self):
+        row = self.customer_table.currentRow()
+        if row < 0:
+            QMessageBox.warning(self, "Error", "No customer selected")
+            return
+        self.editing_customer_id = int(self.customer_table.item(row, 0).text())
+        customer = self.db.get_customer(self.editing_customer_id)
+        if not customer:
+            QMessageBox.warning(self, "Error", "Selected customer not found")
+            return
+        self.name.setText(customer['name'])
+        self.contact.setText(customer.get('contact_person', ''))
+        self.phone.setText(customer.get('phone', ''))
+        self.email.setText(customer.get('email', ''))
+        self.gstin.setText(customer.get('gstin', ''))
+        self.address.setPlainText(customer.get('address', ''))
+        self.add_btn.setEnabled(False)
+        self.save_btn.setEnabled(True)
+        self.edit_btn.setEnabled(False)
+
+    def save_customer_changes(self):
+        if not self.editing_customer_id:
+            QMessageBox.warning(self, "Error", "No customer selected for editing")
+            return
+        if not self.name.text():
+            QMessageBox.warning(self, "Error", "Customer name required")
+            return
+        self.db.update_customer(
+            self.editing_customer_id,
+            self.name.text(),
+            self.contact.text(),
+            self.phone.text(),
+            self.email.text(),
+            self.address.toPlainText(),
+            self.gstin.text()
+        )
+        QMessageBox.information(self, "Success", "Customer details updated!")
+        self.clear_form()
         self.refresh_table()
+
     def refresh_table(self):
-        cur = self.db.conn.cursor()
-        cur.execute("SELECT id, name, contact_person, phone, email, address FROM customers ORDER BY name")
-        rows = cur.fetchall()
+        search_text = getattr(self, 'search', None)
+        if search_text and search_text.text().strip():
+            rows = self.db.search_customers(search_text.text().strip())
+        else:
+            rows = self.db.get_all_customers()
         self.customer_table.setRowCount(len(rows))
         for r, row in enumerate(rows):
             for c, val in enumerate(row):
-                self.customer_table.setItem(r, c, QTableWidgetItem(str(val)))
+                self.customer_table.setItem(r, c, QTableWidgetItem(str(val or "")))
     def delete_customer(self):
         row = self.customer_table.currentRow()
         if row < 0:
@@ -165,13 +271,12 @@ class ItemsTab(QWidget):
             for c, val in enumerate(row):
                 item = QTableWidgetItem(str(val))
 
-                # Highlight search matches
+                # Highlight search matches with blue background
                 if filter_text and filter_text.lower() in str(val).lower():
-                    item.setBackground(QColor("yellow"))
+                    item.setBackground(QColor("blue"))
+                    item.setForeground(QBrush(QColor(255, 255, 255)))  # white text
 
                 self.table.setItem(r, c, item)
-
-
 
     def add_item(self):
         if not self.desc.text() or not self.unit.text():
@@ -234,6 +339,27 @@ class ItemsTab(QWidget):
 # ---------- Quotations Tab ----------
 class QuotationsTab(QWidget):
 
+    def on_item_changed(self, item):
+        """Handle itemChanged signal for the quotations table (safe stub placed early).
+
+        If full implementation is available later in the class, it will be used; this
+        ensures the signal connect in __init__ won't fail if order changes.
+        """
+        try:
+            if getattr(self, 'updating_table', False):
+                return
+        except Exception:
+            return
+        col = item.column()
+        row = item.row()
+        # act on qty (2) or unit price (4) when possible
+        if col in (2, 4) and hasattr(self, '_recalculate_line_total'):
+            try:
+                self.updating_table = True
+                self._recalculate_line_total(row)
+            finally:
+                self.updating_table = False
+
     def __init__(self, db: Database, service: QuotationService):
         super().__init__()
         self.db = db
@@ -251,12 +377,36 @@ class QuotationsTab(QWidget):
         self.layout.addWidget(self.customer_details)
         self.load_customers()
         self.customer_combo.currentIndexChanged.connect(self.show_customer_details)
-        # Items table
-        self.items_table = QTableWidget(0, 5)
-        self.items_table.setHorizontalHeaderLabels(["Description", "Qty", "Unit", "Unit Price", "SAC/HSN"])
+        # Column mapping:
+        # 0 - Description (QComboBox), 1 - SAC/HSN, 2 - Qty, 3 - Unit, 4 - Unit Price, 5 - Total
+        
+        # Search bar for quotations
+        search_layout = QHBoxLayout()
+        self.search_quotes = QLineEdit()
+        self.search_quotes.setPlaceholderText("Search quotations by quote# or date...")
+        self.search_quotes.textChanged.connect(self.load_quotation_list)
+        search_layout.addWidget(QLabel("Search:"))
+        search_layout.addWidget(self.search_quotes)
+        self.layout.addLayout(search_layout)
+
+        # Saved quotation list for selection and editing
+        self.layout.addWidget(QLabel("Existing Quotations:"))
+        self.quote_list = QListWidget()
+        self.quote_list.itemSelectionChanged.connect(self.on_quote_selected)
+        self.layout.addWidget(self.quote_list)
+        
+        self.items_table = QTableWidget(0, 6)
+        self.items_table.setHorizontalHeaderLabels(["Description", "SAC/HSN", "Qty", "Unit", "Unit Price", "Total"])
         self.items_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        # Recalculate totals when editable cells change
+        self.items_table.itemChanged.connect(self.on_item_changed)
+        self.updating_table = False  # guard to avoid recursive itemChanged handling
         self.layout.addWidget(QLabel("Line Items:"))
         self.layout.addWidget(self.items_table)
+        # Grand total label below the table
+        self.grand_total_label = QLabel("Grand Total: 0.00")
+        self.grand_total_label.setAlignment(Qt.AlignmentFlag.AlignRight)
+        self.layout.addWidget(self.grand_total_label)
         btn_layout = QHBoxLayout()
         self.add_row_btn = QPushButton("Add Item Row")
         self.add_row_btn.clicked.connect(self.add_row)
@@ -273,14 +423,98 @@ class QuotationsTab(QWidget):
         self.gen_btn = QPushButton("Generate Quotation PDF")
         self.gen_btn.clicked.connect(self.generate_quote)
         self.layout.addWidget(self.gen_btn)
+        self.load_quotation_list()
+
+    def load_quotation_list(self):
+        keyword = self.search_quotes.text().strip() if hasattr(self, 'search_quotes') else ''
+        if keyword:
+            rows = self.db.search_quotations(keyword)
+        else:
+            rows = self.db.get_all_quotations()
+
+        self.quote_list.clear()
+        for qid, quote_no, date, customer, total, status in rows:
+            item = QListWidgetItem(f"{quote_no} - {customer} - {date} - ₹{total:.2f}")
+            item.setData(Qt.ItemDataRole.UserRole, qid)
+            self.quote_list.addItem(item)
+
+    def on_quote_selected(self):
+        selected = self.quote_list.selectedItems()
+        if not selected:
+            return
+        qid = selected[0].data(Qt.ItemDataRole.UserRole)
+        if qid:
+            self.load_quotation_by_id(qid)
+
+    def load_quotation_by_id(self, quotation_id):
+        self.items_table.setRowCount(0)
+        self.items_table.itemChanged.disconnect()  # Block itemChanged signal during load
+        try:
+            quote_details = self.db.get_quotation_details(quotation_id)
+            if quote_details:
+                customer_id = quote_details['customer_id']
+                for i in range(self.customer_combo.count()):
+                    if self.customer_combo.itemData(i) == customer_id:
+                        self.customer_combo.setCurrentIndex(i)
+                        break
+                self.show_customer_details()
+                self.notes.setPlainText(quote_details.get('notes', ''))
+
+            quote_items = self.db.get_quotation_items(quotation_id)
+            for row_idx, item_data in enumerate(quote_items):
+                desc, code, qty, unit, unit_price, sac_hsn = item_data
+                self.items_table.insertRow(row_idx)
+
+                combo = QComboBox()
+                combo.addItem("-- Select Item --", None)
+                items = self.db.get_items()
+                for it in items:
+                    combo.addItem(f"{it[1]} - {it[2]}", it)
+
+                found_index = -1
+                for i in range(combo.count()):
+                    data = combo.itemData(i)
+                    if data and data[2] == desc and data[1] == code:
+                        found_index = i
+                        break
+                if found_index != -1:
+                    combo.setCurrentIndex(found_index)
+                else:
+                    combo.addItem(desc, (None, code, desc, unit, unit_price, sac_hsn))
+                    combo.setCurrentIndex(combo.count() - 1)
+
+                combo.currentIndexChanged.connect(lambda index, r=row_idx, c=combo: self.fill_item_details(r, c))
+                self.items_table.setCellWidget(row_idx, 0, combo)
+
+                sac_item = QTableWidgetItem(sac_hsn or "")
+                qty_item = QTableWidgetItem(str(qty))
+                qty_item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+                unit_item = QTableWidgetItem(unit or "")
+                price_item = QTableWidgetItem(f"{unit_price:.2f}")
+                price_item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+                total_item = QTableWidgetItem(f"{Decimal(str(qty)) * Decimal(str(unit_price)):.2f}")
+                total_item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+                total_item.setFlags(total_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+
+                self.items_table.setItem(row_idx, 1, sac_item)
+                self.items_table.setItem(row_idx, 2, qty_item)
+                self.items_table.setItem(row_idx, 3, unit_item)
+                self.items_table.setItem(row_idx, 4, price_item)
+                self.items_table.setItem(row_idx, 5, total_item)
+        finally:
+            self.items_table.itemChanged.connect(self.on_item_changed)  # Reconnect signal
+            self.calculate_grand_total()
 
     def load_customers(self):
+        """Populate the customer combo for the Quotations tab."""
         cur = self.db.conn.cursor()
         cur.execute("SELECT id, name FROM customers ORDER BY name")
         self.customers = cur.fetchall()
         self.customer_combo.clear()
         for cid, name in self.customers:
             self.customer_combo.addItem(name, cid)
+
+    
 
     def show_customer_details(self):
         idx = self.customer_combo.currentIndex()
@@ -302,35 +536,113 @@ class QuotationsTab(QWidget):
         self.items_table.insertRow(row)
 
         combo = QComboBox()
+        combo.addItem("-- Select Item --", None)
         items = self.db.get_items()  # (id, code, description, unit, unit_price, sac_hsn)
         for it in items:
-            combo.addItem(it[2], it)  # show description, store full item data
+            combo.addItem(f"{it[1]} - {it[2]}", it)  # show code + description, store full item data
 
-        # Connect to a lambda that passes the row and the combo box itself
         combo.currentIndexChanged.connect(lambda index, r=row, c=combo: self.fill_item_details(r, c))
         self.items_table.setCellWidget(row, 0, combo)
 
-        # Set default Qty and make other cells editable
-        self.items_table.setItem(row, 1, QTableWidgetItem("1")) # Qty
-        self.items_table.setItem(row, 2, QTableWidgetItem("")) # Unit
-        self.items_table.setItem(row, 3, QTableWidgetItem("0.00")) # Unit Price
-        self.items_table.setItem(row, 4, QTableWidgetItem("")) # SAC/HSN
+        sac_item = QTableWidgetItem("")
+        qty_item = QTableWidgetItem("1")
+        unit_item = QTableWidgetItem("")
+        price_item = QTableWidgetItem("0.00")
+        total_item = QTableWidgetItem("0.00")
+
+        qty_item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        price_item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        total_item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        total_item.setFlags(total_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+
+        self.items_table.setItem(row, 1, sac_item)         # SAC/HSN
+        self.items_table.setItem(row, 2, qty_item)         # Qty (default 1)
+        self.items_table.setItem(row, 3, unit_item)        # Unit
+        self.items_table.setItem(row, 4, price_item)       # Unit Price
+        self.items_table.setItem(row, 5, total_item)       # Total (read-only calculation)
 
     def fill_item_details(self, row, combo):
-        if combo.currentIndex() < 0:
-            return
-        item_id, code, desc, unit, price, sac_hsn = combo.currentData()
+        item_data = combo.currentData()
+        self.updating_table = True
+        try:
+            if item_data:
+                _, code, desc, unit, price, sac_hsn = item_data
 
-        # Set unit, price, sac_hsn
-        self.items_table.setItem(row, 2, QTableWidgetItem(unit))
-        self.items_table.setItem(row, 3, QTableWidgetItem(str(price)))
-        self.items_table.setItem(row, 4, QTableWidgetItem(sac_hsn)) # SAC/HSN
+                sac_it = QTableWidgetItem(sac_hsn or "")
+                qty_item = self.items_table.item(row, 2)
+                if qty_item is None or not qty_item.text().strip():
+                    qty_item = QTableWidgetItem("1")
+                    qty_item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+                    self.items_table.setItem(row, 2, qty_item)
 
+                unit_it = QTableWidgetItem(unit or "")
+                price_it = QTableWidgetItem(f"{price:.2f}" if isinstance(price, (int, float, Decimal)) else str(price))
+                price_it.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+
+                total_it = self.items_table.item(row, 5)
+                if total_it is None:
+                    total_it = QTableWidgetItem("0.00")
+                    total_it.setFlags(total_it.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                    total_it.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+                    self.items_table.setItem(row, 5, total_it)
+
+                self.items_table.setItem(row, 1, sac_it)
+                self.items_table.setItem(row, 3, unit_it)
+                self.items_table.setItem(row, 4, price_it)
+                self._recalculate_line_total(row)
+            else:
+                self.items_table.setItem(row, 1, QTableWidgetItem(""))
+                self.items_table.setItem(row, 3, QTableWidgetItem(""))
+                price_it = QTableWidgetItem("0.00")
+                price_it.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+                self.items_table.setItem(row, 4, price_it)
+                total_it = self.items_table.item(row, 5)
+                if total_it:
+                    total_it.setText("0.00")
+                self.calculate_grand_total()
+        finally:
+            self.updating_table = False
+
+
+    def _recalculate_line_total(self, row):
+        qty_item = self.items_table.item(row, 2)
+        price_item = self.items_table.item(row, 4)
+        total_item = self.items_table.item(row, 5)
+        try:
+            qty = Decimal(qty_item.text()) if qty_item and qty_item.text() else Decimal('0')
+            price = Decimal(price_item.text()) if price_item and price_item.text() else Decimal('0')
+            line_total = (qty * price).quantize(Decimal('0.01'))
+        except Exception:
+            line_total = Decimal('0.00')
+
+        if total_item is None:
+            total_item = QTableWidgetItem(f"{line_total:.2f}")
+            total_item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+            total_item.setFlags(total_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+            self.items_table.setItem(row, 5, total_item)
+        else:
+            total_item.setText(f"{line_total:.2f}")
+            total_item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+            total_item.setFlags(total_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+
+        self.calculate_grand_total()
+
+    def calculate_grand_total(self):
+        grand = Decimal('0.00')
+        for r in range(self.items_table.rowCount()):
+            item = self.items_table.item(r, 5)
+            if item and item.text():
+                try:
+                    grand += Decimal(item.text())
+                except Exception:
+                    pass
+        self.grand_total_label.setText(f"Grand Total: {grand:.2f}")
 
     def del_row(self):
         row = self.items_table.currentRow()
         if row >= 0:
             self.items_table.removeRow(row)
+            self.calculate_grand_total()
 
     def generate_quote(self):
         customer_id = self.customer_combo.currentData()
@@ -341,10 +653,11 @@ class QuotationsTab(QWidget):
         items = []
         for row in range(self.items_table.rowCount()):
             combo = self.items_table.cellWidget(row, 0)
-            qty_item = self.items_table.item(row, 1)
-            unit_item = self.items_table.item(row, 2)
-            price_item = self.items_table.item(row, 3)
-            sac_item = self.items_table.item(row, 4)
+            sac_item = self.items_table.item(row, 1)
+            qty_item = self.items_table.item(row, 2)
+            unit_item = self.items_table.item(row, 3)
+            price_item = self.items_table.item(row, 4)
+            total_item = self.items_table.item(row, 5)
 
             if not combo or qty_item is None or price_item is None or not qty_item.text() or not price_item.text():
                 QMessageBox.warning(self, "Error", f"Missing or invalid item details at row {row+1}.")
@@ -360,10 +673,17 @@ class QuotationsTab(QWidget):
             # Get item description and code from the combo box's current data
             item_data = combo.currentData()
             if item_data:
-                item_id, item_code, desc, _, _, _ = item_data # desc is from combo, others from table
+                item_id, item_code, desc, _, _, _ = item_data
+                if not item_code:
+                    current_text = combo.currentText()
+                    if ' - ' in current_text:
+                        item_code = current_text.split(' - ')[0].strip()
             else:
                 desc = combo.currentText() # Fallback if no data stored (manual entry)
-                item_code = "" # No code if manually entered
+                if ' - ' in desc:
+                    item_code = desc.split(' - ')[0].strip()
+                else:
+                    item_code = ""
 
             items.append({
                 'description': desc,
@@ -371,7 +691,8 @@ class QuotationsTab(QWidget):
                 'qty': qty,
                 'unit': unit_item.text() if unit_item else "",
                 'unit_price': price,
-                'sac_hsn': sac_item.text() if sac_item else ""
+                'sac_hsn': sac_item.text() if sac_item else "",
+                'line_total': float(total_item.text()) if total_item and total_item.text() else qty * price
             })
 
         if not items:
@@ -462,10 +783,24 @@ class InvoicesTab(QWidget):
         top_layout.addLayout(right_col_layout)
         self.layout.addLayout(top_layout)
 
+        # Search and filter bar
+        search_filter_layout = QHBoxLayout()
+        self.search_invoices_field = QLineEdit()
+        self.search_invoices_field.setPlaceholderText("Search by invoice#, customer...")
+        search_filter_layout.addWidget(QLabel("Search:"))
+        search_filter_layout.addWidget(self.search_invoices_field)
+        
+        self.status_filter = QComboBox()
+        self.status_filter.addItems(["All", "Draft", "Issued", "Paid"])
+        search_filter_layout.addWidget(QLabel("Status:"))
+        search_filter_layout.addWidget(self.status_filter)
+        search_filter_layout.addStretch()
+        self.layout.addLayout(search_filter_layout)
+        
         # Items Table
-        self.items_table = QTableWidget(0, 5)
+        self.items_table = QTableWidget(0, 6)
         self.items_table.setHorizontalHeaderLabels(
-            ["Description", "Qty", "Unit", "Unit Price", "SAC/HSN"]
+            ["Description", "Qty", "Unit", "Unit Price", "SAC/HSN", "Total"]
         )
         self.items_table.horizontalHeader().setSectionResizeMode(
             QHeaderView.ResizeMode.Stretch
@@ -521,6 +856,10 @@ class InvoicesTab(QWidget):
         self.refresh_invoice_list()
         self.generate_invoice_number() # Generate initial invoice number
         self.calculate_total() # Initial total calculation
+        
+        # Connect search and filter signals
+        self.search_invoices_field.textChanged.connect(self.refresh_invoice_list)
+        self.status_filter.currentIndexChanged.connect(self.refresh_invoice_list)
 
     def load_quotations(self):
         cur = self.db.conn.cursor()
@@ -600,7 +939,8 @@ class InvoicesTab(QWidget):
                 # Find item in combo box by description
                 found_index = -1
                 for i in range(combo.count()):
-                    if combo.itemText(i) == desc:
+                    data = combo.itemData(i)
+                    if data and data[2] == desc:
                         found_index = i
                         break
                 if found_index != -1:
@@ -610,47 +950,141 @@ class InvoicesTab(QWidget):
                     combo.addItem(desc, (None, code, desc, unit, price, sac_hsn))
                     combo.setCurrentIndex(combo.count() - 1)
 
-                self.items_table.setItem(row_idx, 1, QTableWidgetItem(str(qty)))
-                self.items_table.setItem(row_idx, 2, QTableWidgetItem(unit))
-                self.items_table.setItem(row_idx, 3, QTableWidgetItem(str(price)))
-                self.items_table.setItem(row_idx, 4, QTableWidgetItem(sac_hsn))
+                # Column mapping for Invoices: 1 Qty, 2 Unit, 3 Unit Price, 4 SAC/HSN
+                qty_it = QTableWidgetItem(str(qty))
+                qty_it.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+                unit_it = QTableWidgetItem(unit)
+                price_it = QTableWidgetItem(str(price))
+                price_it.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+                sac_it = QTableWidgetItem(sac_hsn)
+
+                self.items_table.setItem(row_idx, 1, qty_it)
+                self.items_table.setItem(row_idx, 2, unit_it)
+                self.items_table.setItem(row_idx, 3, price_it)
+                self.items_table.setItem(row_idx, 4, sac_it)
+
+                # Calculate and set total
+                total = qty * price
+                total_it = QTableWidgetItem(f"{total:.2f}")
+                total_it.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+                total_it.setFlags(total_it.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                self.items_table.setItem(row_idx, 5, total_it)
 
         self.calculate_total()
+
+    def on_item_changed(self, item):
+        # Recalculate line total when qty or unit price changes
+        if self.updating_table:
+            return
+        col = item.column()
+        row = item.row()
+        # Only act on qty (1) or unit price (3) edits
+        if col in (1, 3):
+            try:
+                self.updating_table = True
+                if hasattr(self, '_recalculate_line_total'):
+                    self._recalculate_line_total(row)
+            finally:
+                self.updating_table = False
+
+    def _recalculate_line_total(self, row):
+        qty_item = self.items_table.item(row, 1)
+        price_item = self.items_table.item(row, 3)
+        total_item = self.items_table.item(row, 5)
+        try:
+            qty = Decimal(qty_item.text()) if qty_item and qty_item.text() else Decimal('0')
+            price = Decimal(price_item.text()) if price_item and price_item.text() else Decimal('0')
+            line_total = (qty * price).quantize(Decimal('0.01'))
+        except Exception:
+            line_total = Decimal('0.00')
+        if total_item is None:
+            new_tot = QTableWidgetItem(f"{line_total:.2f}")
+            new_tot.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+            new_tot.setFlags(new_tot.flags() & ~Qt.ItemFlag.ItemIsEditable)
+            self.items_table.setItem(row, 5, new_tot)
+        else:
+            total_item.setText(f"{line_total:.2f}")
+            total_item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+            total_item.setFlags(total_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+        self.calculate_total()
+
+    def calculate_grand_total(self):
+        grand = Decimal('0.00')
+        for r in range(self.items_table.rowCount()):
+            t = self.items_table.item(r, 5)
+            if t and t.text():
+                try:
+                    grand += Decimal(t.text())
+                except Exception:
+                    pass
+        self.grand_total_label.setText(f"Grand Total: {grand:.2f}")
 
     def add_item_row(self):
         row_count = self.items_table.rowCount()
         self.items_table.insertRow(row_count)
 
-        # Create a QComboBox for item selection in the first column
         item_combo = QComboBox()
-        item_combo.addItem("-- Select Item --", None) # Placeholder
+        item_combo.addItem("-- Select Item --", None)
         items = self.db.get_items()  # (id, code, description, unit, unit_price, sac_hsn)
         for it in items:
-            item_combo.addItem(it[2], it) # Display description, store full item data
+            item_combo.addItem(f"{it[1]} - {it[2]}", it)
 
-        # Connect the combo box's signal to fill other item details
         item_combo.currentIndexChanged.connect(lambda index, r=row_count, c=item_combo: self.fill_item_details(r, c))
         self.items_table.setCellWidget(row_count, 0, item_combo)
 
-        # Initialize other cells as editable QTableWidgetItems
-        self.items_table.setItem(row_count, 1, QTableWidgetItem("1")) # Qty
-        self.items_table.setItem(row_count, 2, QTableWidgetItem("")) # Unit
-        self.items_table.setItem(row_count, 3, QTableWidgetItem("0.00")) # Unit Price
-        self.items_table.setItem(row_count, 4, QTableWidgetItem("")) # SAC/HSN
+        sac_item = QTableWidgetItem("")
+        qty_item = QTableWidgetItem("1")
+        unit_item = QTableWidgetItem("")
+        price_item = QTableWidgetItem("0.00")
+        total_item = QTableWidgetItem("0.00")
+
+        qty_item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        price_item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        total_item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        total_item.setFlags(total_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+
+        self.items_table.setItem(row_count, 1, sac_item)
+        self.items_table.setItem(row_count, 2, qty_item)
+        self.items_table.setItem(row_count, 3, unit_item)
+        self.items_table.setItem(row_count, 4, price_item)
+        self.items_table.setItem(row_count, 5, total_item)
 
     def fill_item_details(self, row, combo):
         item_data = combo.currentData()
         if item_data:
-            # item_id, code, desc, unit, price, sac_hsn
             _, code, desc, unit, price, sac_hsn = item_data
-            self.items_table.setItem(row, 2, QTableWidgetItem(unit))
-            self.items_table.setItem(row, 3, QTableWidgetItem(str(price)))
-            self.items_table.setItem(row, 4, QTableWidgetItem(sac_hsn))
+
+            sac_item = QTableWidgetItem(sac_hsn or "")
+            qty_item = self.items_table.item(row, 2)
+            if qty_item is None or not qty_item.text().strip():
+                qty_item = QTableWidgetItem("1")
+                qty_item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+                self.items_table.setItem(row, 2, qty_item)
+
+            unit_item = QTableWidgetItem(unit or "")
+            price_item = QTableWidgetItem(f"{price:.2f}" if isinstance(price, (int, float, Decimal)) else str(price))
+            price_item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+
+            total_item = self.items_table.item(row, 5)
+            if total_item is None:
+                total_item = QTableWidgetItem("0.00")
+                total_item.setFlags(total_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                total_item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+                self.items_table.setItem(row, 5, total_item)
+
+            self.items_table.setItem(row, 1, sac_item)
+            self.items_table.setItem(row, 3, unit_item)
+            self.items_table.setItem(row, 4, price_item)
+            self._recalculate_line_total(row)
         else:
-            # Clear fields if "Select Item" is chosen
-            self.items_table.setItem(row, 2, QTableWidgetItem(""))
-            self.items_table.setItem(row, 3, QTableWidgetItem("0.00"))
-            self.items_table.setItem(row, 4, QTableWidgetItem(""))
+            self.items_table.setItem(row, 1, QTableWidgetItem(""))
+            self.items_table.setItem(row, 3, QTableWidgetItem(""))
+            price_item = QTableWidgetItem("0.00")
+            price_item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+            self.items_table.setItem(row, 4, price_item)
+            total_item = self.items_table.item(row, 5)
+            if total_item:
+                total_item.setText("0.00")
         self.calculate_total()
 
     def delete_item_row(self):
@@ -681,7 +1115,7 @@ class InvoicesTab(QWidget):
 
     def save_invoice(self, status='Draft'):
         customer_id = self.customer_combo.currentData()
-        if customer_id is None:
+        if customer_id is None: 
             QMessageBox.warning(self, "Error", "Please select a customer.")
             return
 
@@ -764,7 +1198,18 @@ class InvoicesTab(QWidget):
             QMessageBox.critical(self, "Error", str(e))
 
     def refresh_invoice_list(self):
-        invoices = self.db.get_all_invoices()
+        # Get search and filter values
+        search_text = self.search_invoices_field.text().strip() if hasattr(self, 'search_invoices_field') else ""
+        status_filter = self.status_filter.currentText() if hasattr(self, 'status_filter') else "All"
+        
+        # Fetch data based on search/filter
+        if search_text:
+            invoices = self.db.search_invoices(search_text)
+        elif status_filter != "All":
+            invoices = self.db.get_invoices_by_status(status_filter)
+        else:
+            invoices = self.db.get_all_invoices()
+        
         self.existing_invoices_table.setRowCount(len(invoices))
         for r, inv in enumerate(invoices):
             # id, invoice_no, invoice_date, total, status
@@ -820,7 +1265,8 @@ class InvoicesTab(QWidget):
                 # Try to find the item in the master list
                 found_index = -1
                 for i in range(combo.count()):
-                    if combo.itemText(i) == desc:
+                    data = combo.itemData(i)
+                    if data and data[2] == desc:
                         found_index = i
                         break
                 if found_index != -1:
@@ -878,6 +1324,30 @@ class SettingsTab(QWidget):
         self.layout.addWidget(QLabel("GSTIN:"))
         self.layout.addWidget(self.gstin)
 
+        # Bank details
+        self.bank_name = QLineEdit(self.pdf_maker.company_info.get('bank_name', ''))
+        self.bank_account_name = QLineEdit(self.pdf_maker.company_info.get('bank_account_name', ''))
+        self.bank_account_no = QLineEdit(self.pdf_maker.company_info.get('bank_account_no', ''))
+        self.bank_branch = QLineEdit(self.pdf_maker.company_info.get('bank_branch', ''))
+        self.bank_account_type = QLineEdit(self.pdf_maker.company_info.get('bank_account_type', ''))
+        self.bank_ifsc_code = QLineEdit(self.pdf_maker.company_info.get('bank_ifsc_code', ''))
+        self.bank_address = QTextEdit(self.pdf_maker.company_info.get('bank_address', ''))
+
+        self.layout.addWidget(QLabel("Bank Name:"))
+        self.layout.addWidget(self.bank_name)
+        self.layout.addWidget(QLabel("Account Name:"))
+        self.layout.addWidget(self.bank_account_name)
+        self.layout.addWidget(QLabel("Account Number:"))
+        self.layout.addWidget(self.bank_account_no)
+        self.layout.addWidget(QLabel("Branch:"))
+        self.layout.addWidget(self.bank_branch)
+        self.layout.addWidget(QLabel("Account Type (Current/Saving):"))
+        self.layout.addWidget(self.bank_account_type)
+        self.layout.addWidget(QLabel("IFSC Code:"))
+        self.layout.addWidget(self.bank_ifsc_code)
+        self.layout.addWidget(QLabel("Bank Address:"))
+        self.layout.addWidget(self.bank_address)
+
         # Tax %
         self.tax = QDoubleSpinBox()
         self.tax.setValue(self.service.tax_percent)
@@ -887,8 +1357,24 @@ class SettingsTab(QWidget):
 
         # Terms
         self.terms = QTextEdit("\n".join(self.pdf_maker.terms))
-        self.layout.addWidget(QLabel("Terms & Conditions:"))
+        self.layout.addWidget(QLabel("Quotation Terms & Conditions:"))
         self.layout.addWidget(self.terms)
+
+        # Invoice Terms
+        self.invoice_terms = QTextEdit("\n".join(self.pdf_maker.invoice_terms))
+        self.layout.addWidget(QLabel("Invoice Terms & Conditions:"))
+        self.layout.addWidget(self.invoice_terms)
+
+        # Logo path
+        logo_layout = QHBoxLayout()
+        self.logo_path = QLineEdit(self.pdf_maker.company_info.get('logo_path', ''))
+        self.logo_path.setPlaceholderText("Path to logo image file (.png, .jpg, .jpeg)")
+        self.browse_logo_btn = QPushButton("Browse...")
+        self.browse_logo_btn.clicked.connect(self.browse_logo)
+        logo_layout.addWidget(QLabel("Logo Path:"))
+        logo_layout.addWidget(self.logo_path)
+        logo_layout.addWidget(self.browse_logo_btn)
+        self.layout.addLayout(logo_layout)
 
         # Save button
         self.save_btn = QPushButton("Save Settings")
@@ -901,9 +1387,617 @@ class SettingsTab(QWidget):
         self.pdf_maker.company_info['phone'] = self.phone.text()
         self.pdf_maker.company_info['email'] = self.email.text()
         self.pdf_maker.company_info['gstin'] = self.gstin.text()
+        self.pdf_maker.company_info['bank_name'] = self.bank_name.text()
+        self.pdf_maker.company_info['bank_account_name'] = self.bank_account_name.text()
+        self.pdf_maker.company_info['bank_account_no'] = self.bank_account_no.text()
+        self.pdf_maker.company_info['bank_branch'] = self.bank_branch.text()
+        self.pdf_maker.company_info['bank_account_type'] = self.bank_account_type.text()
+        self.pdf_maker.company_info['bank_ifsc_code'] = self.bank_ifsc_code.text()
+        self.pdf_maker.company_info['bank_address'] = self.bank_address.toPlainText()
+        self.pdf_maker.company_info['logo_path'] = self.logo_path.text()
         self.pdf_maker.terms = self.terms.toPlainText().splitlines()
+        self.pdf_maker.company_info['terms'] = self.pdf_maker.terms
+        self.pdf_maker.invoice_terms = self.invoice_terms.toPlainText().splitlines()
+        self.pdf_maker.company_info['invoice_terms'] = self.pdf_maker.invoice_terms
         self.service.tax_percent = Decimal(str(self.tax.value()))
+        # Persist to file
+        save_company_info(self.pdf_maker.company_info)
         QMessageBox.information(self, "Saved", "Settings updated!")
+
+    def browse_logo(self):
+        file_dialog = QFileDialog()
+        file_dialog.setFileMode(QFileDialog.FileMode.ExistingFile)
+        file_dialog.setNameFilter("Image files (*.png *.jpg *.jpeg *.bmp)")
+        if file_dialog.exec():
+            selected_files = file_dialog.selectedFiles()
+            if selected_files:
+                logo_file_path = selected_files[0]
+                # Copy the logo to a local directory
+                import shutil
+                logo_dir = os.path.join(os.path.dirname(__file__), "logos")
+                os.makedirs(logo_dir, exist_ok=True)
+                logo_filename = os.path.basename(logo_file_path)
+                local_logo_path = os.path.join(logo_dir, logo_filename)
+                try:
+                    shutil.copy2(logo_file_path, local_logo_path)
+                    self.logo_path.setText(local_logo_path)
+                    QMessageBox.information(self, "Logo Selected", f"Logo copied to: {local_logo_path}")
+                except Exception as e:
+                    QMessageBox.warning(self, "Error", f"Failed to copy logo: {str(e)}")
+
+
+# ---------- Proforma Invoice Tab ----------
+class ProformaInvoiceTab(QWidget):
+    def __init__(self, db: Database, quotation_service: QuotationService):
+        super().__init__()
+        self.db = db
+        self.quotation_service = quotation_service
+        self.current_proforma_id = None
+        self.layout = QVBoxLayout()
+        self.setLayout(self.layout)
+
+        # Search bar
+        search_layout = QHBoxLayout()
+        self.search_input = QLineEdit()
+        self.search_input.setPlaceholderText("Search proforma invoices...")
+        self.search_input.textChanged.connect(self.search_proformas)
+        search_layout.addWidget(QLabel("Search:"))
+        search_layout.addWidget(self.search_input)
+        self.layout.addLayout(search_layout)
+
+        # Status filter
+        filter_layout = QHBoxLayout()
+        self.status_filter = QComboBox()
+        self.status_filter.addItems(["All", "Draft", "Issued", "Paid", "Cancelled"])
+        self.status_filter.currentTextChanged.connect(self.filter_by_status)
+        filter_layout.addWidget(QLabel("Status:"))
+        filter_layout.addWidget(self.status_filter)
+        filter_layout.addStretch()
+        self.layout.addLayout(filter_layout)
+
+        # Proforma list table
+        self.proforma_table = QTableWidget()
+        self.proforma_table.setColumnCount(6)
+        self.proforma_table.setHorizontalHeaderLabels(["ID", "Proforma No", "Date", "Customer", "Total", "Status"])
+        self.proforma_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        self.proforma_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.proforma_table.itemSelectionChanged.connect(self.on_proforma_selected)
+        self.layout.addWidget(self.proforma_table)
+
+        # Buttons
+        button_layout = QHBoxLayout()
+        self.create_from_quote_btn = QPushButton("Create from Quotation")
+        self.create_from_quote_btn.clicked.connect(self.create_from_quotation)
+        self.edit_btn = QPushButton("Edit Proforma")
+        self.edit_btn.clicked.connect(self.edit_proforma)
+        self.edit_btn.setEnabled(False)
+        self.generate_pdf_btn = QPushButton("Generate PDF")
+        self.generate_pdf_btn.clicked.connect(self.generate_pdf)
+        self.generate_pdf_btn.setEnabled(False)
+        self.update_status_btn = QPushButton("Update Status")
+        self.update_status_btn.clicked.connect(self.update_status)
+        self.update_status_btn.setEnabled(False)
+        button_layout.addWidget(self.create_from_quote_btn)
+        button_layout.addWidget(self.edit_btn)
+        button_layout.addWidget(self.generate_pdf_btn)
+        button_layout.addWidget(self.update_status_btn)
+        button_layout.addStretch()
+        self.layout.addLayout(button_layout)
+
+        # Load initial data
+        self.load_proformas()
+
+    def load_proformas(self):
+        self.proforma_table.setRowCount(0)
+        proformas = self.db.get_all_proforma_invoices()
+
+        for row, proforma in enumerate(proformas):
+            self.proforma_table.insertRow(row)
+            proforma_id, proforma_no, date, customer, total, status = proforma
+
+            self.proforma_table.setItem(row, 0, QTableWidgetItem(str(proforma_id)))
+            self.proforma_table.setItem(row, 1, QTableWidgetItem(proforma_no))
+            self.proforma_table.setItem(row, 2, QTableWidgetItem(date))
+            self.proforma_table.setItem(row, 3, QTableWidgetItem(customer or ""))
+            self.proforma_table.setItem(row, 4, QTableWidgetItem(f"{total:.2f}"))
+            self.proforma_table.setItem(row, 5, create_status_item(status or "Draft"))
+
+    def search_proformas(self):
+        keyword = self.search_input.text().strip()
+        if not keyword:
+            self.load_proformas()
+            return
+
+        self.proforma_table.setRowCount(0)
+        proformas = self.db.search_proforma_invoices(keyword)
+
+        for row, proforma in enumerate(proformas):
+            self.proforma_table.insertRow(row)
+            proforma_id, proforma_no, date, customer, total, status = proforma
+
+            self.proforma_table.setItem(row, 0, QTableWidgetItem(str(proforma_id)))
+            self.proforma_table.setItem(row, 1, QTableWidgetItem(proforma_no))
+            self.proforma_table.setItem(row, 2, QTableWidgetItem(date))
+            self.proforma_table.setItem(row, 3, QTableWidgetItem(customer or ""))
+            self.proforma_table.setItem(row, 4, QTableWidgetItem(f"{total:.2f}"))
+            self.proforma_table.setItem(row, 5, create_status_item(status or "Draft"))
+
+    def filter_by_status(self):
+        status = self.status_filter.currentText()
+        if status == "All":
+            self.load_proformas()
+            return
+
+        self.proforma_table.setRowCount(0)
+        all_proformas = self.db.get_all_proforma_invoices()
+
+        for row, proforma in enumerate(all_proformas):
+            proforma_id, proforma_no, date, customer, total, proforma_status = proforma
+            if proforma_status == status or (status == "Draft" and not proforma_status):
+                self.proforma_table.insertRow(self.proforma_table.rowCount())
+                current_row = self.proforma_table.rowCount() - 1
+                self.proforma_table.setItem(current_row, 0, QTableWidgetItem(str(proforma_id)))
+                self.proforma_table.setItem(current_row, 1, QTableWidgetItem(proforma_no))
+                self.proforma_table.setItem(current_row, 2, QTableWidgetItem(date))
+                self.proforma_table.setItem(current_row, 3, QTableWidgetItem(customer or ""))
+                self.proforma_table.setItem(current_row, 4, QTableWidgetItem(f"{total:.2f}"))
+                self.proforma_table.setItem(current_row, 5, create_status_item(proforma_status or "Draft"))
+
+    def on_proforma_selected(self):
+        selected_rows = set()
+        for item in self.proforma_table.selectedItems():
+            selected_rows.add(item.row())
+
+        has_selection = len(selected_rows) > 0
+        self.edit_btn.setEnabled(has_selection)
+        self.generate_pdf_btn.setEnabled(has_selection)
+        self.update_status_btn.setEnabled(has_selection)
+
+        if len(selected_rows) == 1:
+            row = list(selected_rows)[0]
+            self.current_proforma_id = int(self.proforma_table.item(row, 0).text())
+
+    def create_from_quotation(self):
+        # Show quotation selection dialog
+        from PyQt6.QtWidgets import QDialog, QVBoxLayout, QListWidget, QPushButton
+
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Select Quotation")
+        dialog.resize(600, 400)
+
+        layout = QVBoxLayout()
+
+        # Quotation list
+        self.quote_list = QListWidget()
+        quotations = self.db.get_all_quotations()
+        for quote in quotations:
+            quote_id, quote_no, date, customer, total, status = quote
+            self.quote_list.addItem(f"{quote_no} - {customer} - {date} - ₹{total:.2f}")
+
+        layout.addWidget(QLabel("Select a quotation to create proforma from:"))
+        layout.addWidget(self.quote_list)
+
+        # Buttons
+        button_layout = QHBoxLayout()
+        select_btn = QPushButton("Create Proforma")
+        select_btn.clicked.connect(lambda: self.do_create_from_quotation(dialog))
+        cancel_btn = QPushButton("Cancel")
+        cancel_btn.clicked.connect(dialog.reject)
+        button_layout.addWidget(select_btn)
+        button_layout.addWidget(cancel_btn)
+        layout.addLayout(button_layout)
+
+        dialog.setLayout(layout)
+        dialog.exec()
+
+    def do_create_from_quotation(self, dialog):
+        selected_items = self.quote_list.selectedItems()
+        if not selected_items:
+            QMessageBox.warning(self, "No Selection", "Please select a quotation.")
+            return
+
+        # Get quotation ID from selected item
+        selected_text = selected_items[0].text()
+        quote_no = selected_text.split(" - ")[0]
+
+        # Find quotation by quote_no
+        quotations = self.db.get_all_quotations()
+        quotation_id = None
+        for quote in quotations:
+            if quote[1] == quote_no:  # quote_no is at index 1
+                quotation_id = quote[0]
+                break
+
+        if not quotation_id:
+            QMessageBox.warning(self, "Error", "Could not find quotation.")
+            return
+
+        # Generate proforma number
+        from datetime import datetime
+        today = datetime.now()
+        date_str = today.strftime("%Y%m%d")
+        last_seq = self.db.get_last_proforma_sequence_for_date(date_str)
+        if last_seq:
+            # Extract sequence number from last proforma_no (format: YYYYMMDD-XXX)
+            seq_part = last_seq.split('-')[-1]
+            seq_num = int(seq_part) + 1
+        else:
+            seq_num = 1
+        proforma_no = f"{date_str}-{seq_num:03d}"
+
+        try:
+            proforma_id = self.db.create_proforma_from_quotation(quotation_id, proforma_no, today.strftime("%Y-%m-%d"))
+            QMessageBox.information(self, "Success", f"Proforma invoice {proforma_no} created successfully!")
+            dialog.accept()
+            self.load_proformas()
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to create proforma: {str(e)}")
+
+    def edit_proforma(self):
+        if not self.current_proforma_id:
+            return
+
+        # Open edit dialog
+        dialog = ProformaEditDialog(self.db, self.current_proforma_id, self)
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            self.load_proformas()
+
+    def generate_pdf(self):
+        if not self.current_proforma_id:
+            return
+
+        try:
+            # Get proforma details
+            proforma = self.db.get_proforma_details(self.current_proforma_id)
+            if not proforma:
+                QMessageBox.warning(self, "Error", "Proforma not found.")
+                return
+
+            # Get customer details
+            customer = self.db.get_customer(proforma['customer_id'])
+            if not customer:
+                QMessageBox.warning(self, "Error", "Customer not found.")
+                return
+
+            # Get items
+            items = self.db.get_proforma_items(self.current_proforma_id)
+
+            # Generate PDF
+            from quotation_tool import ProformaPDF
+            pdf_terms = proforma.get('terms')
+            if pdf_terms:
+                pdf_terms = pdf_terms.split('\n')
+            else:
+                pdf_terms = default_proforma_terms()
+
+            pdf_maker = ProformaPDF(self.quotation_service.pdf_maker.company_info, pdf_terms, self.quotation_service.pdf_maker.logo_path)
+
+            file_path = pdf_maker.generate_pdf(
+                proforma_no=proforma['proforma_no'],
+                proforma_date=proforma['proforma_date'],
+                customer=customer,
+                items=items,
+                subtotal=proforma['subtotal'],
+                tax_percent=proforma['tax_percent'],
+                tax_amount=proforma['tax_amount'],
+                total=proforma['total'],
+                currency=proforma['currency'],
+                notes=proforma.get('notes', '')
+            )
+
+            # Update PDF path in database
+            cur = self.db.conn.cursor()
+            cur.execute("UPDATE proforma_invoices SET pdf_path=? WHERE id=?", (file_path, self.current_proforma_id))
+            self.db.conn.commit()
+
+            QMessageBox.information(self, "Success", f"PDF generated: {file_path}")
+
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to generate PDF: {str(e)}")
+
+    def update_status(self):
+        if not self.current_proforma_id:
+            return
+
+        # Status update dialog
+        from PyQt6.QtWidgets import QDialog, QVBoxLayout, QComboBox, QLineEdit, QDialogButtonBox
+
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Update Proforma Status")
+
+        layout = QVBoxLayout()
+
+        # Status dropdown
+        self.status_combo = QComboBox()
+        self.status_combo.addItems(["Draft", "Issued", "Paid", "Cancelled"])
+        layout.addWidget(QLabel("Status:"))
+        layout.addWidget(self.status_combo)
+
+        # Advance payment fields (only for Paid status)
+        self.advance_amount = QLineEdit()
+        self.advance_date = QLineEdit()
+        self.advance_date.setPlaceholderText("YYYY-MM-DD")
+        layout.addWidget(QLabel("Advance Amount (₹):"))
+        layout.addWidget(self.advance_amount)
+        layout.addWidget(QLabel("Advance Date:"))
+        layout.addWidget(self.advance_date)
+
+        # Buttons
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        buttons.accepted.connect(lambda: self.do_update_status(dialog))
+        buttons.rejected.connect(dialog.reject)
+        layout.addWidget(buttons)
+
+        dialog.setLayout(layout)
+        dialog.exec()
+
+    def do_update_status(self, dialog):
+        status = self.status_combo.currentText()
+        advance_amount = None
+        advance_date = None
+
+        if status == "Paid":
+            try:
+                advance_amount = float(self.advance_amount.text().strip())
+                advance_date = self.advance_date.text().strip()
+                if not advance_date:
+                    QMessageBox.warning(self, "Error", "Advance date is required for Paid status.")
+                    return
+            except ValueError:
+                QMessageBox.warning(self, "Error", "Invalid advance amount.")
+                return
+
+        try:
+            self.db.update_proforma_status(self.current_proforma_id, status, advance_amount, advance_date)
+            QMessageBox.information(self, "Success", "Status updated successfully!")
+            dialog.accept()
+            self.load_proformas()
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to update status: {str(e)}")
+
+
+# ---------- Proforma Edit Dialog ----------
+class ProformaEditDialog(QDialog):
+    def __init__(self, db: Database, proforma_id: int, parent=None):
+        super().__init__(parent)
+        self.db = db
+        self.proforma_id = proforma_id
+        self.setWindowTitle("Edit Proforma Invoice")
+        self.resize(800, 600)
+
+        # Get proforma data
+        self.proforma = self.db.get_proforma_details(proforma_id)
+        self.items = list(self.db.get_proforma_items(proforma_id))
+
+        layout = QVBoxLayout()
+
+        # Proforma info
+        info_layout = QHBoxLayout()
+        info_layout.addWidget(QLabel(f"Proforma No: {self.proforma['proforma_no']}"))
+        info_layout.addWidget(QLabel(f"Date: {self.proforma['proforma_date']}"))
+        info_layout.addStretch()
+        layout.addLayout(info_layout)
+
+        # Items table
+        self.items_table = QTableWidget()
+        self.items_table.setColumnCount(7)
+        self.items_table.setHorizontalHeaderLabels(["Description", "Code", "Qty", "Unit", "Unit Price", "SAC/HSN", "Total"])
+        self.items_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        layout.addWidget(QLabel("Items:"))
+        layout.addWidget(self.items_table)
+
+        # Load items
+        self.load_items()
+
+        # Item buttons
+        item_buttons = QHBoxLayout()
+        self.add_item_btn = QPushButton("Add Item")
+        self.add_item_btn.clicked.connect(self.add_item)
+        self.edit_item_btn = QPushButton("Edit Item")
+        self.edit_item_btn.clicked.connect(self.edit_item)
+        self.delete_item_btn = QPushButton("Delete Item")
+        self.delete_item_btn.clicked.connect(self.delete_item)
+        item_buttons.addWidget(self.add_item_btn)
+        item_buttons.addWidget(self.edit_item_btn)
+        item_buttons.addWidget(self.delete_item_btn)
+        item_buttons.addStretch()
+        layout.addLayout(item_buttons)
+
+        # Notes
+        self.notes_edit = QTextEdit()
+        self.notes_edit.setPlainText(self.proforma.get('notes', ''))
+        layout.addWidget(QLabel("Notes:"))
+        layout.addWidget(self.notes_edit)
+
+        # Proforma terms (editable)
+        self.terms_edit = QTextEdit()
+        self.terms_edit.setPlainText(self.proforma.get('terms', '\n'.join(default_proforma_terms())))
+        layout.addWidget(QLabel("Proforma Terms & Conditions:"))
+        layout.addWidget(self.terms_edit)
+
+        # Totals
+        totals_layout = QHBoxLayout()
+        self.subtotal_label = QLabel(f"Subtotal: ₹{self.proforma['subtotal']:.2f}")
+        self.tax_label = QLabel(f"Tax ({self.proforma['tax_percent']}%): ₹{self.proforma['tax_amount']:.2f}")
+        self.total_label = QLabel(f"Total: ₹{self.proforma['total']:.2f}")
+        totals_layout.addWidget(self.subtotal_label)
+        totals_layout.addWidget(self.tax_label)
+        totals_layout.addWidget(self.total_label)
+        totals_layout.addStretch()
+        layout.addLayout(totals_layout)
+
+        # Buttons
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel)
+        buttons.accepted.connect(self.save_changes)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+        self.setLayout(layout)
+
+    def load_items(self):
+        self.items_table.setRowCount(0)
+        for row, item in enumerate(self.items):
+            self.items_table.insertRow(row)
+            desc, code, qty, unit, price, line_total, hsn = item
+            total = line_total  # Use the stored line_total
+
+            self.items_table.setItem(row, 0, QTableWidgetItem(desc))
+            self.items_table.setItem(row, 1, QTableWidgetItem(code or ""))
+            self.items_table.setItem(row, 2, QTableWidgetItem(str(qty)))
+            self.items_table.setItem(row, 3, QTableWidgetItem(unit))
+            self.items_table.setItem(row, 4, QTableWidgetItem(f"{price:.2f}"))
+            self.items_table.setItem(row, 5, QTableWidgetItem(str(hsn) if hsn else ""))
+            self.items_table.setItem(row, 6, QTableWidgetItem(f"{total:.2f}"))
+
+    def add_item(self):
+        dialog = ItemEditDialog("Add Item", self)
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            desc, code, qty, unit, price, hsn = dialog.get_item_data()
+            self.items.append((desc, code, qty, unit, price, qty * price, hsn))
+            self.load_items()
+            self.update_totals()
+
+    def edit_item(self):
+        selected_rows = set()
+        for item in self.items_table.selectedItems():
+            selected_rows.add(item.row())
+
+        if len(selected_rows) != 1:
+            QMessageBox.warning(self, "Selection Error", "Please select exactly one item to edit.")
+            return
+
+        row = list(selected_rows)[0]
+        current_item = self.items[row]
+
+        dialog = ItemEditDialog("Edit Item", self)
+        dialog.set_item_data(current_item[0], current_item[1], current_item[2], current_item[3], current_item[4], current_item[6])  # desc, code, qty, unit, price, hsn
+
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            desc, code, qty, unit, price, hsn = dialog.get_item_data()
+            self.items[row] = (desc, code, qty, unit, price, qty * price, hsn)
+            self.load_items()
+            self.update_totals()
+
+    def delete_item(self):
+        selected_rows = sorted(set(item.row() for item in self.items_table.selectedItems()), reverse=True)
+
+        if not selected_rows:
+            QMessageBox.warning(self, "Selection Error", "Please select items to delete.")
+            return
+
+        for row in selected_rows:
+            del self.items[row]
+
+        self.load_items()
+        self.update_totals()
+
+    def update_totals(self):
+        subtotal = sum(item[5] for item in self.items)  # line_total is at index 5
+        tax_percent = self.proforma['tax_percent']
+        tax_amount = (subtotal * tax_percent) / 100
+        total = subtotal + tax_amount
+
+        self.subtotal_label.setText(f"Subtotal: ₹{subtotal:.2f}")
+        self.tax_label.setText(f"Tax ({tax_percent}%): ₹{tax_amount:.2f}")
+        self.total_label.setText(f"Total: ₹{total:.2f}")
+
+    def save_changes(self):
+        try:
+            # Update items in database
+            cur = self.db.conn.cursor()
+            cur.execute("DELETE FROM proforma_items WHERE proforma_id=?", (self.proforma_id,))
+
+            for item in self.items:
+                desc, code, qty, unit, price, line_total, hsn = item
+                cur.execute("""
+                    INSERT INTO proforma_items (proforma_id, item_description, item_code, qty, unit, unit_price, line_total, sac_hsn)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """, (self.proforma_id, desc, code, qty, unit, price, line_total, hsn))
+
+            # Update notes and terms
+            notes = self.notes_edit.toPlainText()
+            proforma_terms = self.terms_edit.toPlainText()
+            cur.execute("UPDATE proforma_invoices SET notes=?, terms=? WHERE id=?", (notes, proforma_terms, self.proforma_id))
+
+            # Update totals
+            self.update_totals()
+            subtotal = sum(item[5] for item in self.items)
+            tax_amount = (subtotal * self.proforma['tax_percent']) / 100
+            total = subtotal + tax_amount
+
+            cur.execute("""
+                UPDATE proforma_invoices
+                SET subtotal=?, tax_amount=?, total=?
+                WHERE id=?
+            """, (subtotal, tax_amount, total, self.proforma_id))
+
+            self.db.conn.commit()
+
+            QMessageBox.information(self, "Success", "Proforma updated successfully!")
+            self.accept()
+
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to save changes: {str(e)}")
+
+
+# ---------- Item Edit Dialog ----------
+class ItemEditDialog(QDialog):
+    def __init__(self, title, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle(title)
+        self.resize(400, 300)
+
+        layout = QVBoxLayout()
+
+        # Form fields
+        self.desc_edit = QTextEdit()
+        self.code_edit = QLineEdit()
+        self.qty_spin = QSpinBox()
+        self.qty_spin.setMinimum(1)
+        self.unit_edit = QLineEdit()
+        self.price_spin = QDoubleSpinBox()
+        self.price_spin.setMinimum(0)
+        self.price_spin.setMaximum(999999)
+        self.hsn_edit = QLineEdit()
+
+        layout.addWidget(QLabel("Description:"))
+        layout.addWidget(self.desc_edit)
+        layout.addWidget(QLabel("Item Code:"))
+        layout.addWidget(self.code_edit)
+        layout.addWidget(QLabel("Quantity:"))
+        layout.addWidget(self.qty_spin)
+        layout.addWidget(QLabel("Unit:"))
+        layout.addWidget(self.unit_edit)
+        layout.addWidget(QLabel("Unit Price:"))
+        layout.addWidget(self.price_spin)
+        layout.addWidget(QLabel("SAC/HSN:"))
+        layout.addWidget(self.hsn_edit)
+
+        # Buttons
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+        self.setLayout(layout)
+
+    def set_item_data(self, desc, code, qty, unit, price, hsn):
+        self.desc_edit.setPlainText(desc)
+        self.code_edit.setText(code or "")
+        self.qty_spin.setValue(int(qty))
+        self.unit_edit.setText(unit)
+        self.price_spin.setValue(float(price))
+        self.hsn_edit.setText(hsn or "")
+
+    def get_item_data(self):
+        return (
+            self.desc_edit.toPlainText(),
+            self.code_edit.text(),
+            self.qty_spin.value(),
+            self.unit_edit.text(),
+            self.price_spin.value(),
+            self.hsn_edit.text()
+        )
 
 
 # ---------- Main Window ----------
@@ -917,6 +2011,7 @@ class MainWindow(QMainWindow):
         tabs.addTab(CustomersTab(db), "Customers")
         tabs.addTab(ItemsTab(db), "Items")
         tabs.addTab(QuotationsTab(db, quotation_service), "Quotations")
+        tabs.addTab(ProformaInvoiceTab(db, quotation_service), "Proforma Invoices")
         tabs.addTab(InvoicesTab(db, invoice_service, quotation_service), "Invoices")
         tabs.addTab(SettingsTab(pdf_maker, quotation_service), "Settings")
 
@@ -928,18 +2023,31 @@ if __name__ == "__main__":
     from quotation_tool import Database, QuotePDF, QuotationService
 
     db = Database()
-    company = {
+    default_company = {
         'name': "Apex Automobile Testing",
         'address': "62 Vrindavan Colony, Gawali Palasiya, MHOW, Indore, MP 453441",
         'phone': "+91-9754220798",
         'email': "deepeshpatidar@hotmail.com",
         'gstin': "23AOHPD5200L1ZD"
     }
-    pdf_maker = QuotePDF(company_info=company, terms=default_terms()) # This is now generic for both
+    # Load company info from file, or use defaults
+    company = load_company_info(default_company)
+    logo_path = company.get('logo_path', '')
+    terms = company.get('terms')
+    if isinstance(terms, str):
+        terms = terms.splitlines()
+    if not isinstance(terms, list) or not terms:
+        terms = default_terms()
+    invoice_terms = company.get('invoice_terms')
+    if isinstance(invoice_terms, str):
+        invoice_terms = invoice_terms.splitlines()
+    if not isinstance(invoice_terms, list) or not invoice_terms:
+        invoice_terms = default_invoice_terms()
+    pdf_maker = QuotePDF(company_info=company, terms=terms, invoice_terms=invoice_terms, logo_path=logo_path) # This is now generic for both
     quotation_service = QuotationService(db=db, pdf_maker=pdf_maker, currency="INR", tax_percent=18.0)
     invoice_service = InvoiceService(db=db, pdf_maker=pdf_maker, currency="INR", tax_percent=18.0)
 
     app = QApplication(sys.argv) # Pass both services to MainWindow
     win = MainWindow(db, pdf_maker, quotation_service, invoice_service)
-    win.show()
+    win.showMaximized()
     sys.exit(app.exec())

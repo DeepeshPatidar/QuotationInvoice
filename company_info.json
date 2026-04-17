@@ -1,0 +1,31 @@
+{
+  "name": "Apex Automobile Testing",
+  "address": "62 Vrindavan Colony, Gawali Palasiya, MHOW, Indore, MP 453441",
+  "phone": "+91-9754220798",
+  "email": "deepeshpatidar@hotmail.com",
+  "gstin": "23AOHPD5200L1ZD",
+  "bank_name": "Central Bank of India",
+  "bank_account_name": "Apex Automobile Testing",
+  "bank_account_no": "5827327283",
+  "bank_branch": "Gawlipalasia",
+  "bank_account_type": "Current",
+  "bank_ifsc_code": "CBIN0281298",
+  "bank_address": "Gawlipalasia, MHOW, Indore, Madhya Pradesh 453411",
+  "logo_path": "d:\\ApexAutomobileTesting\\Offer\\PythonApp\\logos\\logo.png",
+  "terms": [
+    "\\textbf{1. Scope of Service:} Services include test driver and instrumentation technician support for vehicle testing activities. Personnel will operate as per instructions provided by the client’s engineering/testing team. \\\\\\textbf{2. Service Charges} Charges are on per day / per shift basis (8--10 hours). Overtime (if applicable) will be charged extra on pro-rata basis. Applicable GST (18 percent) will be charged extra. \\\\\\textbf{3. Working Hours and Overtime} Standard working hours: 8 hours per day. Overtime beyond this will be charged at 1.25x. Weekly off / holiday working will be charged extra. \\\\\\textbf{4. Travel, Boarding and Lodging} If services are required outside base location, travel, accommodation, and food to be provided by client OR reimbursed at actuals. Local conveyance to be provided or reimbursed. \\\\\\textbf{5. Client Responsibilities} Client shall ensure safe and test-ready vehicle condition, required permissions and track access, and insurance coverage of vehicle during testing. Any damage due to vehicle condition or test environment shall not be liability of Apex Automobile Testing. \\\\",
+    "\\textbf{6. Liability Clause} Driver and technician will perform duties with due care. However, Apex Automobile Testing shall not be liable for any vehicle damage, accident, or consequential loss during testing or driving on roads. Client must ensure vehicle is insured. \\\\",
+    "\\textbf{7. Safety and Compliance} All testing shall follow client safety protocols. Any specific safety or compliance requirement must be explained by client. Required safety gear (helmet, safety suit, seatbelt, etc.) shall be provided by client. \\\\",
+    "\\textbf{8. Payment Terms} Payment within 15--30 days from invoice date. \\\\",
+    "",
+    "\\textbf{9. Cancellation / Minimum Billing} Minimum billing: 1 full day. Cancellation within 24 hours -- 50 percent charge. Same day -- 100 percent charge. \\\\",
+    "",
+    "\\textbf{10. Replacement Clause} In case of unavailability of personnel, equivalent replacement will be provided. No additional cost unless skill upgrade requested. \\\\",
+    "",
+    "\\textbf{11. Confidentiality} All test data, vehicle details, and project information will be kept strictly confidential. \\\\",
+    "",
+    "\\textbf{12. Force Majeure} No liability for delays due to natural calamities, strikes, or government restrictions. \\\\",
+    "",
+    "\\textbf{13. Jurisdiction} Subject to jurisdiction of Indore, Madhya Pradesh. \\\\"
+  ]
+}

@@ -1,0 +1,115 @@
+\documentclass[12pt,a4paper]{article}
+\usepackage[margin=15mm]{geometry}
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage{booktabs}
+\usepackage{longtable}
+\usepackage{array}
+\usepackage{siunitx}
+\usepackage[hidelinks]{hyperref}
+\usepackage{graphicx}
+\usepackage{tabularx}
+\usepackage{array}
+\usepackage{fancybox}
+\usepackage{ragged2e}
+\sisetup{round-mode=places,round-precision=2,group-separator={,}}
+\renewcommand{\familydefault}{\sfdefault}
+\setlength{\parindent}{0pt}
+\newcommand{\br}{\\}
+\begin{document}
+\thispagestyle{empty}
+
+%================ HEADER =================%
+\noindent
+\begin{minipage}[t]{0.25\textwidth}
+	\vspace{0.00001cm}
+	{% if logo_path %}
+	\includegraphics[height=2cm]{ {{ logo_path | replace('\\','/') }} }
+	{% endif %}
+\end{minipage}%
+\hfill
+\vspace{0.01cm}
+\begin{minipage}[t]{0.6\textwidth\hspace{0cm}}
+	\raggedright
+	\textbf{\Large {{ company_info.name }}} \\
+	{{ company_info.address | replace('\n','\\\\') }} \\
+	{% if company_info.gstin %}\textbf{GSTIN:} {{ company_info.gstin }} \\{% endif %}
+	\textbf{Mobile:}{{ company_info.phone }} \\
+	\textbf{Email:} {{ company_info.email }}
+\end{minipage}
+
+\vspace{0.3cm}
+\hrule
+\vspace{0.6cm}
+
+\begin{center}
+  {\LARGE \textbf{ {{ doc_type }} }}\\[6pt]
+\end{center}
+\vspace{4mm}
+\vspace{6mm}
+\begin{tabular}{@{}p{0.48\linewidth} p{0.48\linewidth}@{}}
+\textbf{Bill To:} & \textbf{Document Details:} \\
+{{ customer.name }}\\
+{% if customer.contact_person %}Contact: {{ customer.contact_person }}\\{% endif %}
+{% if customer.address %}{{ customer.address | replace('\n','\\\\') }}\\{% endif %}
+{% if customer.phone %}Phone: {{ customer.phone }}\\{% endif %}
+{% if customer.email %}Email: {{ customer.email }}\\{% endif %}
+{% if customer.gstin %}GSTIN: {{ customer.gstin }}\\{% endif %}
+&
+\begin{tabular}{@{}ll@{}}
+\textbf{ {{ doc_type }} No: } & {{ doc_no }}\\
+Date: & {{ doc_date }}\\
+Currency: & {{ currency }}\\
+\end{tabular} \\
+\end{tabular}
+\vspace{6mm}
+\begin{longtable}{@{}p{0.05\linewidth} p{0.35\linewidth} p{0.14\linewidth} p{0.08\linewidth} p{0.08\linewidth} p{0.12\linewidth} p{0.12\linewidth}@{}}
+\toprule
+\textbf{S.No} & \textbf{Description} & \textbf{Item Code} & \textbf{Unit} & \textbf{Qty} & \textbf{Unit Price} & \textbf{Amount} \\
+\midrule
+\endfirsthead
+\toprule
+\textbf{S.No} & \textbf{Description} & \textbf{Item Code} & \textbf{Unit} & \textbf{Qty} & \textbf{Unit Price} & \textbf{Amount} \\
+\midrule
+\endhead
+{% for item in items %}
+{{ loop.index }} & {{ item.description }} & {{ item.code }} & {{ item.unit }} & {{ item.qty }} & {{ item.unit_price }} & {{ item.line_total }} \\
+{% endfor %}
+\bottomrule
+\end{longtable}
+\vspace{6mm}
+\begin{tabular}{@{}l r@{}}
+Subtotal: & {{ subtotal }} \\
+Tax ({{ tax_percent }}\%): & {{ tax_amount }} \\
+\midrule
+\textbf{Total:} & \textbf{ {{ total }} } \\
+\end{tabular}
+\vspace{6mm}
+{% if notes %}
+\textbf{Notes:}\\
+{{ notes | replace('\n','\\\\') }}\\
+\vspace{6mm}
+{% endif %}
+{% if company_info.bank_name %}\textbf{Bank Details:}\\
+\begin{tabular}{@{}l l@{}}
+Bank Name: & {{ company_info.bank_name }} \\
+{% if company_info.bank_account_name %}Account Name: & {{ company_info.bank_account_name }} \\{% endif %}
+Account Number: & {{ company_info.bank_account_no }} \\
+{% if company_info.bank_branch %}Branch: & {{ company_info.bank_branch }} \\{% endif %}
+{% if company_info.bank_account_type %}Account Type: & {{ company_info.bank_account_type }} \\{% endif %}
+{% if company_info.bank_ifsc_code %}IFSC Code: & {{ company_info.bank_ifsc_code }} \\{% endif %}
+{% if company_info.bank_address %}Bank Address: & {{ company_info.bank_address | replace('\n', ' ') }} \\{% endif %}
+\end{tabular}\\
+\vspace{6mm}
+{% endif %}
+\textbf{Terms \& Conditions:}\\
+\begin{enumerate}
+{% for term in terms %}
+  \item {{ term }}
+{% endfor %}
+\end{enumerate}
+\vspace{10mm}
+\noindent
+\textbf{For {{ company_info.name }}}\\[12pt]
+This document is computer-generated and does not require a physical signature.
+\end{document}
