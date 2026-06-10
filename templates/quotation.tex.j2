@@ -29,7 +29,7 @@
 \end{minipage}%
 \hfill
 \vspace{0.01cm}
-\begin{minipage}[t]{0.6\textwidth\hspace{0cm}}
+\begin{minipage}[t]{0.5\textwidth\hspace{0cm}}
 	\raggedright
 	\textbf{\Large {{ company_info.name }}} \\
 	{{ company_info.address | replace('\n','\\\\') }} \\
@@ -47,19 +47,22 @@
 \end{center}
 \vspace{4mm}
 \vspace{6mm}
-\begin{tabular}{@{}p{0.48\linewidth} p{0.48\linewidth}@{}}
-\textbf{Bill To:} & \textbf{Document Details:} \\
-{{ customer.name }}\\
-{% if customer.contact_person %}Contact: {{ customer.contact_person }}\\{% endif %}
-{% if customer.address %}{{ customer.address | replace('\n','\\\\') }}\\{% endif %}
-{% if customer.phone %}Phone: {{ customer.phone }}\\{% endif %}
-{% if customer.email %}Email: {{ customer.email }}\\{% endif %}
-{% if customer.gstin %}GSTIN: {{ customer.gstin }}\\{% endif %}
+\begin{tabular}{@{}p{0.55\linewidth} p{0.40\linewidth}@{}}
+\begin{tabular}[t]{@{}l@{}}
+    \textbf{To:} \\
+    {{ customer.name }}\\
+    {% if customer.contact_person %}Contact: {{ customer.contact_person }}\\{% endif %}
+    {% if customer.address %}{{ customer.address | replace('\n','\\\\') }}\\{% endif %}
+    {% if customer.phone %}Phone: {{ customer.phone }}\\{% endif %}
+    {% if customer.email %}Email: {{ customer.email }}\\{% endif %}
+    {% if customer.gstin %}GSTIN: {{ customer.gstin }}\\{% endif %}
+\end{tabular}
 &
-\begin{tabular}{@{}ll@{}}
-\textbf{ {{ doc_type }} No: } & {{ doc_no }}\\
-Date: & {{ doc_date }}\\
-Currency: & {{ currency }}\\
+\begin{tabular}[t]{@{}ll@{}}
+    \textbf{     Document Details:} \\
+    \textbf{     {{ doc_type }} No: } & {{ doc_no }}\\
+    Date: & {{     doc_date }}\\
+    Currency: & {{     currency }}\\
 \end{tabular} \\
 \end{tabular}
 \vspace{6mm}
@@ -78,8 +81,13 @@ Currency: & {{ currency }}\\
 \bottomrule
 \end{longtable}
 \vspace{6mm}
+\hfill
 \begin{tabular}{@{}l r@{}}
 Subtotal: & {{ subtotal }} \\
+{% if discount_amount and discount_amount != "0.00" %}
+Discount ({{ discount_percent }}\%): & -{{ discount_amount }} \\
+Subtotal after Discount: & {{ (total|float - tax_amount|float)|round(2) }} \\
+{% endif %}
 Tax ({{ tax_percent }}\%): & {{ tax_amount }} \\
 \midrule
 \textbf{Total:} & \textbf{ {{ total }} } \\
@@ -102,6 +110,7 @@ Account Number: & {{ company_info.bank_account_no }} \\
 \end{tabular}\\
 \vspace{6mm}
 {% endif %}
+\newpage
 \textbf{Terms \& Conditions:}\\
 \begin{enumerate}
 {% for term in terms %}
@@ -112,4 +121,6 @@ Account Number: & {{ company_info.bank_account_no }} \\
 \noindent
 \textbf{For {{ company_info.name }}}\\[12pt]
 This document is computer-generated and does not require a physical signature.
+\vspace{2mm}\\
+---------------------------------End of Document---------------------------------
 \end{document}
