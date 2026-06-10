@@ -8,7 +8,7 @@ A simple quotation generator:
 - saves outputs in quotations/, Proform/, and TaxInvoice/
 
 Dependencies:
-  pip install PyQt6 Jinja2 python-dateutil
+  pip install PyQt6 Jinja2 python-dateutil pypdf
   install MiKTeX or TeX Live and ensure pdflatex is on PATH
 """
 import os
@@ -155,6 +155,7 @@ class Database:
             phone TEXT,
             email TEXT,
             address TEXT,
+            shipping_address TEXT,
             gstin TEXT
         )
         """)
@@ -165,6 +166,10 @@ class Database:
         if 'gstin' not in columns:
             print("INFO: Migrating customers table: adding 'gstin' column.")
             cur.execute("ALTER TABLE customers ADD COLUMN gstin TEXT")
+
+        if 'shipping_address' not in columns:
+            print("INFO: Migrating customers table: adding 'shipping_address' column.")
+            cur.execute("ALTER TABLE customers ADD COLUMN shipping_address TEXT")
 
         # items (catalog or ad-hoc)
         cur.execute("""
@@ -192,9 +197,21 @@ class Database:
             total REAL,
             pdf_path TEXT,
             notes TEXT,
+            discount_percent REAL DEFAULT 0,
+            discount_amount REAL DEFAULT 0,
             FOREIGN KEY(customer_id) REFERENCES customers(id)
         )
         """)
+
+        # Migration for quotations table: add discount columns if missing
+        cur.execute("PRAGMA table_info(quotations)")
+        columns = [row[1] for row in cur.fetchall()]
+        if 'discount_percent' not in columns:
+            print("INFO: Migrating quotations table: adding 'discount_percent' column.")
+            cur.execute("ALTER TABLE quotations ADD COLUMN discount_percent REAL DEFAULT 0")
+        if 'discount_amount' not in columns:
+            print("INFO: Migrating quotations table: adding 'discount_amount' column.")
+            cur.execute("ALTER TABLE quotations ADD COLUMN discount_amount REAL DEFAULT 0")
 
         # quotation line items
         cur.execute("""
@@ -318,11 +335,11 @@ class Database:
         self.conn.commit()
 
     # ---------- Customer functions ----------
-    def add_customer(self, name, contact_person="", phone="", email="", address="", gstin=""):
+    def add_customer(self, name, contact_person="", phone="", email="", address="", shipping_address="", gstin=""):
         cur = self.conn.cursor()
         cur.execute(
-            "INSERT INTO customers (name, contact_person, phone, email, address, gstin) VALUES (?, ?, ?, ?, ?, ?)",
-            (name, contact_person, phone, email, address, gstin)
+            "INSERT INTO customers (name, contact_person, phone, email, address, shipping_address, gstin) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (name, contact_person, phone, email, address, shipping_address, gstin)
         )
         self.conn.commit()
         return cur.lastrowid
@@ -330,27 +347,27 @@ class Database:
     def get_customer(self, customer_id):
         cur = self.conn.cursor()
         cur.execute(
-            "SELECT id, name, contact_person, phone, email, address, gstin FROM customers WHERE id=?",
+            "SELECT id, name, contact_person, phone, email, address, shipping_address, gstin FROM customers WHERE id=?",
             (customer_id,)
         )
         r = cur.fetchone()
         if not r:
             return None
-        keys = ["id", "name", "contact_person", "phone", "email", "address", "gstin"]
+        keys = ["id", "name", "contact_person", "phone", "email", "address", "shipping_address", "gstin"]
         return dict(zip(keys, r))
 
-    def update_customer(self, customer_id, name, contact_person="", phone="", email="", address="", gstin=""):
+    def update_customer(self, customer_id, name, contact_person="", phone="", email="", address="", shipping_address="", gstin=""):
         cur = self.conn.cursor()
         cur.execute(
-            "UPDATE customers SET name=?, contact_person=?, phone=?, email=?, address=?, gstin=? WHERE id=?",
-            (name, contact_person, phone, email, address, gstin, customer_id)
+            "UPDATE customers SET name=?, contact_person=?, phone=?, email=?, address=?, shipping_address=?, gstin=? WHERE id=?",
+            (name, contact_person, phone, email, address, shipping_address, gstin, customer_id)
         )
         self.conn.commit()
 
     def get_all_customers(self):
         """Get all customers sorted by name"""
         cur = self.conn.cursor()
-        cur.execute("SELECT id, name, contact_person, phone, email, gstin, address FROM customers ORDER BY name")
+        cur.execute("SELECT id, name, contact_person, phone, email, gstin, address, shipping_address FROM customers ORDER BY name")
         return cur.fetchall()
 
     def search_customers(self, keyword):
@@ -358,7 +375,7 @@ class Database:
         cur = self.conn.cursor()
         like = f"%{keyword}%"
         cur.execute("""
-            SELECT id, name, contact_person, phone, email, gstin, address
+            SELECT id, name, contact_person, phone, email, gstin, address, shipping_address
             FROM customers
             WHERE name LIKE ? OR phone LIKE ? OR email LIKE ? OR contact_person LIKE ? OR gstin LIKE ?
             ORDER BY name
@@ -427,14 +444,16 @@ class Database:
 
     # ---------- Quotation functions ----------
     def save_quotation(self, quote_no, customer_id, date_iso, currency, subtotal,
-                       tax_percent, tax_amount, total, pdf_path, notes, items):
+                       tax_percent, tax_amount, total, pdf_path, notes, items,
+                       discount_percent=0.0, discount_amount=0.0):
         cur = self.conn.cursor()
         cur.execute("""
             INSERT INTO quotations (quote_no, customer_id, quote_date, currency, subtotal,
-                                    tax_percent, tax_amount, total, pdf_path, notes)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                    tax_percent, tax_amount, total, pdf_path, notes,
+                                    discount_percent, discount_amount)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (quote_no, customer_id, date_iso, currency, subtotal, tax_percent,
-              tax_amount, total, pdf_path, notes))
+              tax_amount, total, pdf_path, notes, discount_percent, discount_amount))
         qid = cur.lastrowid
 
         for it in items:
@@ -447,6 +466,28 @@ class Database:
         self.conn.commit()
         return qid
 
+    def update_quotation(self, quotation_id, quote_no, customer_id, date_iso, currency, subtotal,
+                         tax_percent, tax_amount, total, pdf_path, notes, items,
+                         discount_percent=0.0, discount_amount=0.0):
+        cur = self.conn.cursor()
+        cur.execute("""
+            UPDATE quotations SET quote_no=?, customer_id=?, quote_date=?, currency=?, subtotal=?,
+                                    tax_percent=?, tax_amount=?, total=?, pdf_path=?, notes=?,
+                                    discount_percent=?, discount_amount=?
+            WHERE id=?
+        """, (quote_no, customer_id, date_iso, currency, subtotal, tax_percent,
+              tax_amount, total, pdf_path, notes, discount_percent, discount_amount, quotation_id))
+        
+        # Replace line items
+        cur.execute("DELETE FROM quotation_items WHERE quotation_id=?", (quotation_id,))
+        for it in items:
+            cur.execute("""
+                INSERT INTO quotation_items (quotation_id, item_description, item_code, qty, unit, unit_price, line_total, sac_hsn)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """, (quotation_id, it['description'], it.get('item_code', ''),
+                it['qty'], it.get('unit', ''), it['unit_price'], it['line_total'], it.get('sac_hsn', '')))
+        self.conn.commit()
+
     def last_quote_sequence_for_date(self, date_str_prefix):
         cur = self.conn.cursor()
         cur.execute(
@@ -458,10 +499,11 @@ class Database:
     
     def get_quotation_details(self, quotation_id):
         cur = self.conn.cursor()
-        cur.execute("SELECT customer_id, quote_date, notes FROM quotations WHERE id=?", (quotation_id,))
+        cur.execute("SELECT customer_id, quote_date, notes, discount_percent, discount_amount FROM quotations WHERE id=?", (quotation_id,))
         r = cur.fetchone()
         if r:
-            return {'customer_id': r[0], 'quote_date': r[1], 'notes': r[2]}
+            return {'customer_id': r[0], 'quote_date': r[1], 'notes': r[2], 
+                    'discount_percent': r[3], 'discount_amount': r[4]}
         return None
 
     def get_quotation_items(self, quotation_id):
@@ -821,7 +863,7 @@ class Database:
 
 # ---------- PDF generator ----------
 class QuotePDF:
-    def __init__(self, company_info, terms=None, invoice_terms=None, logo_path=None):
+    def __init__(self, company_info, terms=None, invoice_terms=None, logo_path=None, seal_sign_path=None):
         """
         company_info: dict with name, address, phone, email, gstin (optional)
         terms: list of terms strings for quotations
@@ -831,8 +873,9 @@ class QuotePDF:
         self.terms = terms or default_terms()
         self.invoice_terms = invoice_terms or default_invoice_terms()
         self.logo_path = logo_path
+        self.seal_sign_path = seal_sign_path
 
-    def build(self, doc_type, doc_no, doc_date, customer, items, currency, subtotal, tax_percent, tax_amount, total, notes, output_path):
+    def build(self, doc_type, doc_no, doc_date, customer, items, currency, subtotal, tax_percent, tax_amount, total, notes, output_path, discount_percent=0, discount_amount=0, password=None):
         ensure_dirs()
 
         template_name = 'invoice.tex.j2' if doc_type.lower() == 'invoice' else 'quotation.tex.j2'
@@ -842,7 +885,7 @@ class QuotePDF:
         for item in items:
             formatted_items.append({
                 'description': latex_escape(item.get('description', '')),
-                'code': latex_escape(item.get('code', item.get('item_code', ''))),
+                'code': latex_escape(item.get('item_code', item.get('code', ''))),
                 'unit': latex_escape(item.get('unit', '')),
                 'qty': money(item.get('qty', 0)),
                 'unit_price': money(item.get('unit_price', 0)),
@@ -859,16 +902,47 @@ class QuotePDF:
             'items': formatted_items,
             'currency': latex_escape(currency),
             'subtotal': money(subtotal),
+            'discount_percent': money(discount_percent),
+            'discount_amount': money(discount_amount),
             'tax_percent': money(tax_percent),
             'tax_amount': money(tax_amount),
             'total': money(total),
             'notes': latex_escape(notes),
             'terms': [latex_escape_term(term) for term in (self.invoice_terms if doc_type.lower() == 'invoice' else self.terms)],
-            'logo_path': self.logo_path or ''
+            'logo_path': (self.logo_path or '').replace('\\', '/'),
+            'seal_sign_path': (self.seal_sign_path or '').replace('\\', '/'),
+            'cgst_rate': money(Decimal(str(tax_percent)) / 2),
+            'cgst_amount': money(Decimal(str(tax_amount)) / 2),
+            'sgst_rate': money(Decimal(str(tax_percent)) / 2),
+            'sgst_amount': money(Decimal(str(tax_amount)) / 2),
         }
 
         render_template(template_name, context, tex_path)
         compile_tex(tex_path, os.path.dirname(output_path))
+        if password:
+            self._encrypt_pdf(output_path, password)
+
+    def _encrypt_pdf(self, file_path, password):
+        try:
+            from pypdf import PdfReader, PdfWriter
+            from io import BytesIO
+        except ImportError:
+            raise RuntimeError("The 'pypdf' library is required for PDF password protection but was not found. "
+                               "Please install it using 'pip install pypdf'.")
+
+        # Read content into memory to avoid file locking issues on Windows
+        with open(file_path, "rb") as f:
+            input_data = BytesIO(f.read())
+
+        reader = PdfReader(input_data)
+        writer = PdfWriter()
+        for page in reader.pages:
+            writer.add_page(page)
+        
+        writer.encrypt(user_password=password, owner_password=None)
+        
+        with open(file_path, "wb") as f:
+            writer.write(f)
 
 # ---------- Defaults ----------
 def default_terms():
@@ -910,10 +984,11 @@ class QuotationService:
         self.currency = currency
         self.tax_percent = Decimal(str(tax_percent))
 
-    def _generate_quote_no(self):
+    def _generate_quote_no(self, date_obj=None, prefix="Q-"):
         # Q-YYYYMMDD-0001 (sequential per day)
-        now = datetime.now(tz=tz.tzlocal())
-        date_prefix = now.strftime("Q-%Y%m%d")
+        if date_obj is None:
+            date_obj = datetime.now(tz=tz.tzlocal())
+        date_prefix = date_obj.strftime(f"{prefix}%Y%m%d")
         last = self.db.last_quote_sequence_for_date(date_prefix)
         if last:
             # last like Q-20250918-0003
@@ -925,7 +1000,7 @@ class QuotationService:
             seq = 1
         return f"{date_prefix}-{seq:04d}"
 
-    def create_quotation(self, customer_id, line_items, notes=""):
+    def create_quotation(self, customer_id, line_items, notes="", discount_percent=0.0, existing_quote_id=None, pdf_password=None):
         """
         line_items: list of dicts: {description, qty, unit, unit_price}
         """
@@ -942,7 +1017,7 @@ class QuotationService:
             line_total = (qty * up).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
             items_processed.append({
                 'description': it.get('description', ''),
-                'code': it.get('item_code', ''),
+                'item_code': it.get('item_code', ''),
                 'qty': float(qty),
                 'unit': it.get('unit', ''),
                 'unit_price': float(up),
@@ -950,15 +1025,26 @@ class QuotationService:
                 'sac_hsn': it.get('sac_hsn', '')
             })
             subtotal += line_total
-        tax_percent_dec = Decimal(str(self.tax_percent))
-        tax_amount = (subtotal * (tax_percent_dec / Decimal('100'))).quantize(Decimal("0.01"))
-        total = (subtotal + tax_amount).quantize(Decimal("0.01"))
 
-        #tax_amount = (subtotal * (self.tax_percent/Decimal('100'))).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
-        #total = (subtotal + tax_amount).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+        # Apply discount
+        discount_percent_dec = Decimal(str(discount_percent))
+        discount_amount = (subtotal * (discount_percent_dec / Decimal('100'))).quantize(Decimal("0.01"))
+        subtotal_after_discount = (subtotal - discount_amount).quantize(Decimal("0.01"))
 
-        # create quote no and paths
-        quote_no = self._generate_quote_no()
+        tax_amount = (subtotal_after_discount * (self.tax_percent / Decimal('100'))).quantize(Decimal("0.01"))
+        total = (subtotal_after_discount + tax_amount).quantize(Decimal("0.01"))
+
+        # Handle quote number
+        if existing_quote_id:
+            cur = self.db.conn.cursor()
+            cur.execute("SELECT quote_no FROM quotations WHERE id=?", (existing_quote_id,))
+            row = cur.fetchone()
+            if not row:
+                raise ValueError("Existing quotation not found for update")
+            quote_no = row[0]
+        else:
+            quote_no = self._generate_quote_no()
+
         quote_date = datetime.now(tz=tz.tzlocal()).strftime("%d %b %Y")
         ensure_dirs()
         filename = f"{quote_no}.pdf"
@@ -972,34 +1058,58 @@ class QuotationService:
             customer=customer,
             items=items_processed,
             currency=self.currency,
-            subtotal=float(subtotal),
+            subtotal=float(subtotal), # Original subtotal
+            discount_percent=float(discount_percent_dec),
+            discount_amount=float(discount_amount),
             tax_percent=float(self.tax_percent),
             tax_amount=float(tax_amount),
             total=float(total),
             notes=notes,
-            output_path=pdf_path
+            output_path=pdf_path,
+            password=pdf_password
         )
 
-        # save to db
-        qid = self.db.save_quotation(
-            quote_no=quote_no,
-            customer_id=customer_id,
-            date_iso=datetime.now(tz=tz.tzlocal()).isoformat(),
-            currency=self.currency,
-            subtotal=float(subtotal),
-            tax_percent=float(self.tax_percent),
-            tax_amount=float(tax_amount),
-            total=float(total),
-            pdf_path=pdf_path,
-            notes=notes,
-            items=items_processed
-        )
+        if existing_quote_id:
+            self.db.update_quotation(
+                quotation_id=existing_quote_id,
+                quote_no=quote_no,
+                customer_id=customer_id,
+                date_iso=datetime.now(tz=tz.tzlocal()).isoformat(),
+                currency=self.currency,
+                subtotal=float(subtotal),
+                tax_percent=float(self.tax_percent),
+                tax_amount=float(tax_amount),
+                total=float(total),
+                pdf_path=pdf_path,
+                notes=notes,
+                items=items_processed,
+                discount_percent=float(discount_percent_dec),
+                discount_amount=float(discount_amount)
+            )
+            qid = existing_quote_id
+        else:
+            qid = self.db.save_quotation(
+                quote_no=quote_no,
+                customer_id=customer_id,
+                date_iso=datetime.now(tz=tz.tzlocal()).isoformat(),
+                currency=self.currency,
+                subtotal=float(subtotal),
+                tax_percent=float(self.tax_percent),
+                tax_amount=float(tax_amount),
+                total=float(total),
+                pdf_path=pdf_path,
+                notes=notes,
+                items=items_processed,
+                discount_percent=float(discount_percent_dec),
+                discount_amount=float(discount_amount)
+            )
 
         return {
             'quotation_id': qid,
             'quote_no': quote_no,
             'pdf_path': pdf_path,
             'subtotal': float(subtotal),
+            'discount_amount': float(discount_amount),
             'tax_amount': float(tax_amount),
             'total': float(total)
         }
@@ -1036,7 +1146,7 @@ class InvoiceService:
             line_total = (qty * up).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
             processed_items.append({
                 'description': it.get('description', ''),
-                'code': it.get('item_code', ''),
+                'item_code': it.get('item_code', ''),
                 'qty': float(qty),
                 'unit': it.get('unit', ''),
                 'unit_price': float(up),
@@ -1050,7 +1160,7 @@ class InvoiceService:
         return processed_items, float(subtotal), float(tax_amount), float(total)
 
     def create_invoice(self, customer_id, line_items, notes="", quotation_id=None,
-                       invoice_no=None, invoice_date=None, existing_invoice_id=None, status='Draft'):
+                       invoice_no=None, invoice_date=None, existing_invoice_id=None, status='Draft', pdf_password=None):
         customer = self.db.get_customer(customer_id)
         if not customer:
             raise ValueError("Customer not found")
@@ -1076,7 +1186,8 @@ class InvoiceService:
             tax_amount=tax_amount,
             total=total,
             notes=notes,
-            output_path=pdf_path
+            output_path=pdf_path,
+            password=pdf_password
         )
 
         if existing_invoice_id:
@@ -1144,7 +1255,7 @@ class ProformaPDF:
         self.terms = terms or default_proforma_terms()
         self.logo_path = logo_path
 
-    def generate_pdf(self, proforma_no, proforma_date, customer, items, subtotal, tax_percent, tax_amount, total, currency="INR", notes=""):
+    def generate_pdf(self, proforma_no, proforma_date, customer, items, subtotal, tax_percent, tax_amount, total, currency="INR", notes="", discount_percent=0, discount_amount=0):
         ensure_dirs()
 
         filename = f"PROFORMA_{proforma_no.replace('/', '_')}.pdf"
@@ -1177,6 +1288,8 @@ class ProformaPDF:
             'customer': {k: latex_escape(v) for k, v in customer.items()},
             'items': formatted_items,
             'currency': latex_escape(currency),
+            'discount_percent': money(discount_percent),
+            'discount_amount': money(discount_amount),
             'subtotal': money(subtotal),
             'tax_percent': money(tax_percent),
             'tax_amount': money(tax_amount),
