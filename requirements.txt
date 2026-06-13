@@ -1,3 +1,4 @@
 PyQt6
 Jinja2
 python-dateutil
+pypdf

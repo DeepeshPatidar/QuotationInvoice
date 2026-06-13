@@ -28,7 +28,7 @@ DB_FILE = "quotation.db"
 COMPANY_INFO_FILE = "company_info.json"
 QUOTATION_FOLDER = "quotations"
 PROFORMA_FOLDER = "Proform"
-INVOICE_FOLDER = "TaxInvoice"
+INVOICE_FOLDER = "IssuedInvoices"
 TEMPLATE_FOLDER = "templates"
 
 # ---------- Utilities ----------
@@ -344,6 +344,12 @@ class Database:
         self.conn.commit()
         return cur.lastrowid
 
+    def get_quotation_pdf_path(self, quotation_id):
+        cur = self.conn.cursor()
+        cur.execute("SELECT pdf_path FROM quotations WHERE id=?", (quotation_id,))
+        row = cur.fetchone()
+        return row[0] if row else None
+
     def get_customer(self, customer_id):
         cur = self.conn.cursor()
         cur.execute(
@@ -413,7 +419,7 @@ class Database:
 
     def get_items(self):
         cur = self.conn.cursor()
-        cur.execute("SELECT id, code, description, unit, unit_price, sac_hsn FROM items ORDER BY description")
+        cur.execute("SELECT id, code, description, unit, unit_price, sac_hsn FROM items ORDER BY id ASC")
         return cur.fetchall()
 
     def search_items(self, keyword):
@@ -424,7 +430,7 @@ class Database:
             SELECT id, code, description, unit, unit_price, sac_hsn
             FROM items
             WHERE description LIKE ? OR unit LIKE ?
-            ORDER BY description
+            ORDER BY id ASC
         """, (like, like))
         return cur.fetchall()
 
@@ -535,7 +541,11 @@ class Database:
         """, (like, like, like))
         return cur.fetchall()
 
-    # ---------- Proforma Invoice functions ----------
+    def update_proforma_pdf_path(self, proforma_id, pdf_path):
+        cur = self.conn.cursor()
+        cur.execute("UPDATE proforma_invoices SET pdf_path=? WHERE id=?", (pdf_path, proforma_id))
+        self.conn.commit()
+
     def create_proforma_from_quotation(self, quotation_id, proforma_no, proforma_date, notes=""):
         """Create a proforma invoice from an existing quotation"""
         cur = self.conn.cursor()
@@ -745,6 +755,11 @@ class Database:
             """, (status, proforma_id))
         self.conn.commit()
 
+    def update_proforma_pdf_path(self, proforma_id, pdf_path):
+        cur = self.conn.cursor()
+        cur.execute("UPDATE proforma_invoices SET pdf_path=? WHERE id=?", (pdf_path, proforma_id))
+        self.conn.commit()
+
     def get_last_proforma_sequence_for_date(self, date_str_prefix):
         cur = self.conn.cursor()
         cur.execute(
@@ -795,6 +810,54 @@ class Database:
     def delete_invoice_items(self, invoice_id):
         cur = self.conn.cursor()
         cur.execute("DELETE FROM invoice_items WHERE invoice_id=?", (invoice_id,))
+        self.conn.commit()
+
+    def delete_invoice(self, invoice_id):
+        """Delete an invoice and its items, and attempt to free up the sequence."""
+        cur = self.conn.cursor()
+        cur.execute("SELECT invoice_no, invoice_date FROM invoices WHERE id=?", (invoice_id,))
+        row = cur.fetchone()
+        if not row:
+            return
+        invoice_no, invoice_date = row
+
+        # 1. Delete items and the invoice itself
+        cur.execute("DELETE FROM invoice_items WHERE invoice_id=?", (invoice_id,))
+        cur.execute("DELETE FROM invoices WHERE id=?", (invoice_id,))
+        
+        # 2. Free up sequence logic if it follows the INVxxx pattern
+        match = re.fullmatch(r"INV-?(\d+)(?:-V\d+)?", invoice_no, re.I)
+        if match:
+            seq_val = int(match.group(1))
+            try:
+                dt = None
+                for fmt in ("%Y-%m-%d", "%d %b %Y"):
+                    try:
+                        dt = datetime.strptime(invoice_date, fmt)
+                        break
+                    except ValueError: continue
+                if not dt: dt = datetime.now()
+                
+                start_year = dt.year if dt.month >= 4 else dt.year - 1
+                fy = f"{start_year:04d}-{str(start_year + 1)[-2:]}"
+                
+                # Check if this seq_val matches last_sequence in tracking table
+                cur.execute("SELECT last_sequence FROM invoice_sequences WHERE financial_year=?", (fy,))
+                seq_row = cur.fetchone()
+                if seq_row and seq_row[0] == seq_val:
+                    # Find the next highest sequence among remaining invoices for this FY
+                    date_from = f"{start_year:04d}-04-01"
+                    date_to = f"{start_year + 1:04d}-03-31"
+                    cur.execute("SELECT invoice_no FROM invoices WHERE invoice_date BETWEEN ? AND ?", (date_from, date_to))
+                    max_seq = 0
+                    for (other_no,) in cur.fetchall():
+                        m = re.fullmatch(r"INV-?(\d+)(?:-V\d+)?", other_no, re.I)
+                        if m:
+                            max_seq = max(max_seq, int(m.group(1)))
+                    cur.execute("UPDATE invoice_sequences SET last_sequence=? WHERE financial_year=?", (max_seq, fy))
+            except Exception as e:
+                print(f"INFO: Could not reset invoice sequence: {e}")
+
         self.conn.commit()
 
     def get_invoice_details(self, invoice_id):
@@ -854,11 +917,69 @@ class Database:
     def get_last_invoice_sequence_for_date(self, date_str_prefix):
         cur = self.conn.cursor()
         cur.execute(
-            "SELECT invoice_no FROM invoices WHERE invoice_no LIKE ? ORDER BY invoice_no DESC LIMIT 1",
+            "SELECT invoice_no FROM invoices WHERE invoice_no LIKE ?",
             (f"{date_str_prefix}%",)
         )
-        r = cur.fetchone()
-        return r[0] if r else None
+        sequence_pattern = re.compile(
+            rf"^{re.escape(date_str_prefix)}-(\d+)(?:-v\d+)?$"
+        )
+        sequences = []
+        for (invoice_no,) in cur.fetchall():
+            match = sequence_pattern.fullmatch(invoice_no)
+            if match:
+                sequences.append(int(match.group(1)))
+        if not sequences:
+            return None
+        return f"{date_str_prefix}-{max(sequences):04d}"
+
+    def invoice_number_exists(self, invoice_no):
+        cur = self.conn.cursor()
+        cur.execute("SELECT 1 FROM invoices WHERE invoice_no=? LIMIT 1", (invoice_no,))
+        return cur.fetchone() is not None
+
+    def get_invoice_sequence(self, financial_year):
+        self.conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS invoice_sequences (
+                financial_year TEXT PRIMARY KEY,
+                last_sequence INTEGER NOT NULL DEFAULT 0
+            )
+            """
+        )
+        row = self.conn.execute(
+            "SELECT last_sequence FROM invoice_sequences WHERE financial_year=?",
+            (financial_year,),
+        ).fetchone()
+        configured_sequence = int(row[0]) if row else 0
+
+        start_year = int(financial_year[:4])
+        date_from = f"{start_year:04d}-04-01"
+        date_to = f"{start_year + 1:04d}-03-31"
+        rows = self.conn.execute(
+            """
+            SELECT invoice_no FROM invoices
+            WHERE invoice_date BETWEEN ? AND ?
+            """,
+            (date_from, date_to),
+        ).fetchall()
+        stored_sequences = []
+        for (invoice_no,) in rows:
+            match = re.fullmatch(r"INV-?(\d+)(?:-V\d+)?", invoice_no, re.I)
+            if match:
+                stored_sequences.append(int(match.group(1)))
+        return max([configured_sequence, *stored_sequences])
+
+    def set_invoice_sequence(self, financial_year, sequence):
+        with self.conn:
+            self.conn.execute(
+                """
+                INSERT INTO invoice_sequences (financial_year, last_sequence)
+                VALUES (?, ?)
+                ON CONFLICT(financial_year) DO UPDATE SET
+                    last_sequence=MAX(last_sequence, excluded.last_sequence)
+                """,
+                (financial_year, int(sequence)),
+            )
 
 
 # ---------- PDF generator ----------
@@ -875,7 +996,7 @@ class QuotePDF:
         self.logo_path = logo_path
         self.seal_sign_path = seal_sign_path
 
-    def build(self, doc_type, doc_no, doc_date, customer, items, currency, subtotal, tax_percent, tax_amount, total, notes, output_path, discount_percent=0, discount_amount=0, password=None):
+    def build(self, doc_type, doc_no, doc_date, customer, items, currency, subtotal, tax_percent, tax_amount, total, notes, output_path, discount_percent=0, discount_amount=0, password=None, version=1):
         ensure_dirs()
 
         template_name = 'invoice.tex.j2' if doc_type.lower() == 'invoice' else 'quotation.tex.j2'
@@ -897,6 +1018,7 @@ class QuotePDF:
             'company_info': {k: latex_escape(v) for k, v in self.company_info.items()},
             'doc_type': latex_escape(doc_type),
             'doc_no': latex_escape(doc_no),
+            'version': int(version),
             'doc_date': latex_escape(doc_date),
             'customer': {k: latex_escape(v) for k, v in customer.items()},
             'items': formatted_items,
@@ -1123,19 +1245,51 @@ class InvoiceService:
         self.currency = currency
         self.tax_percent = Decimal(str(tax_percent))
 
-    def _generate_invoice_no(self):
-        # INV-YYYYMMDD-0001 (sequential per day)
-        now = datetime.now(tz=tz.tzlocal())
-        date_prefix = now.strftime("INV-%Y%m%d")
-        last = self.db.get_last_invoice_sequence_for_date(date_prefix)
-        if last:
+    @staticmethod
+    def _financial_year(invoice_date=None):
+        if invoice_date:
+            date_value = None
             try:
-                seq = int(last.split('-')[-1]) + 1
-            except Exception:
-                seq = 1
-        else:
-            seq = 1
-        return f"{date_prefix}-{seq:04d}"
+                date_value = datetime.strptime(invoice_date, "%Y-%m-%d")
+            except ValueError:
+                try:
+                    date_value = datetime.strptime(invoice_date, "%d %b %Y")
+                except ValueError: pass
+            if date_value is None: date_value = datetime.now(tz=tz.tzlocal())
+        else: date_value = datetime.now(tz=tz.tzlocal())
+        start_year = date_value.year if date_value.month >= 4 else date_value.year - 1
+        return f"{start_year:04d}-{str(start_year + 1)[-2:]}"
+
+    @staticmethod
+    def display_invoice_no(invoice_no):
+        return re.sub(r"-V\d+$", "", invoice_no, flags=re.I)
+
+    def _generate_invoice_no(self, invoice_date=None):
+        financial_year = self._financial_year(invoice_date)
+        sequence = self.db.get_invoice_sequence(financial_year) + 1
+        return f"INV{sequence:03d}"
+
+    def _available_invoice_no(self, requested_invoice_no=None, invoice_date=None):
+        financial_year = self._financial_year(invoice_date)
+        last_sequence = self.db.get_invoice_sequence(financial_year)
+        match = re.fullmatch(r"INV-?(\d+)", requested_invoice_no or "", re.I)
+        requested_sequence = int(match.group(1)) if match else 0
+        sequence = max(last_sequence + 1, requested_sequence)
+        candidate = f"INV{sequence:03d}"
+        while self.db.invoice_number_exists(candidate):
+            sequence += 1
+            candidate = f"INV{sequence:03d}"
+        self.db.set_invoice_sequence(financial_year, sequence)
+        return candidate
+
+    def _version_invoice_no(self, invoice_details):
+        root_invoice_no = self.display_invoice_no(invoice_details["invoice_no"])
+        version = max(int(invoice_details.get("version") or 1) + 1, 2)
+        candidate = f"{root_invoice_no}-V{version}"
+        while self.db.invoice_number_exists(candidate):
+            version += 1
+            candidate = f"{root_invoice_no}-V{version}"
+        return root_invoice_no, candidate, version
 
     def calculate_totals(self, line_items):
         subtotal = Decimal("0.00")
@@ -1167,16 +1321,35 @@ class InvoiceService:
 
         processed_items, subtotal, tax_amount, total = self.calculate_totals(line_items)
 
-        invoice_no = invoice_no if invoice_no else self._generate_invoice_no()
+        original_invoice_details = None
+        new_version = 1
+        original_invoice_id = None
+        if existing_invoice_id:
+            original_invoice_details = self.db.get_invoice_details(existing_invoice_id)
+            if not original_invoice_details:
+                raise ValueError("Invoice to edit was not found")
+            display_invoice_no, stored_invoice_no, new_version = self._version_invoice_no(
+                original_invoice_details
+            )
+            original_invoice_id = (
+                original_invoice_details.get("original_invoice_id")
+                or existing_invoice_id
+            )
+        else:
+            display_invoice_no = self._available_invoice_no(
+                invoice_no, invoice_date
+            )
+            stored_invoice_no = display_invoice_no
+
         invoice_date = invoice_date if invoice_date else datetime.now(tz=tz.tzlocal()).strftime("%d %b %Y")
 
         ensure_dirs()
-        filename = f"{invoice_no}.pdf"
+        filename = f"{display_invoice_no}_V{new_version}.pdf"
         pdf_path = os.path.join(INVOICE_FOLDER, filename)
 
         self.pdf_maker.build(
             doc_type="Invoice",
-            doc_no=invoice_no,
+            doc_no=display_invoice_no,
             doc_date=invoice_date,
             customer=customer,
             items=processed_items,
@@ -1187,17 +1360,16 @@ class InvoiceService:
             total=total,
             notes=notes,
             output_path=pdf_path,
-            password=pdf_password
+            password=pdf_password,
+            version=new_version,
         )
 
         if existing_invoice_id:
             # Create a new version
-            original_invoice_details = self.db.get_invoice_details(existing_invoice_id)
-            new_version = original_invoice_details['version'] + 1 if original_invoice_details else 1
             invoice_id = self.db.add_invoice(
                 quotation_id=quotation_id,
                 customer_id=customer_id,
-                invoice_no=f"{invoice_no}-v{new_version}", # Append version to invoice number
+                invoice_no=stored_invoice_no,
                 invoice_date=invoice_date,
                 currency=self.currency,
                 subtotal=subtotal,
@@ -1207,14 +1379,14 @@ class InvoiceService:
                 pdf_path=pdf_path,
                 notes=notes,
                 version=new_version,
-                original_invoice_id=existing_invoice_id,
+                original_invoice_id=original_invoice_id,
                 status=status
             )
         else:
             invoice_id = self.db.add_invoice(
                 quotation_id=quotation_id,
                 customer_id=customer_id,
-                invoice_no=invoice_no,
+                invoice_no=stored_invoice_no,
                 invoice_date=invoice_date,
                 currency=self.currency,
                 subtotal=subtotal,
@@ -1231,7 +1403,7 @@ class InvoiceService:
             self.db.add_invoice_item(
                 invoice_id=invoice_id,
                 item_description=item['description'],
-                item_code=item['code'],
+                item_code=item['item_code'],
                 qty=item['qty'],
                 unit=item['unit'],
                 unit_price=item['unit_price'],
@@ -1241,11 +1413,13 @@ class InvoiceService:
 
         return {
             'invoice_id': invoice_id,
-            'invoice_no': invoice_no,
+            'invoice_no': display_invoice_no,
+            'stored_invoice_no': stored_invoice_no,
             'pdf_path': pdf_path,
             'subtotal': subtotal,
             'tax_amount': tax_amount,
-            'total': total
+            'total': total,
+            'original_invoice_id': original_invoice_id,
         }
 
 # ---------- Proforma PDF Generator ----------
